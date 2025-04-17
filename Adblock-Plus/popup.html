@@ -1,0 +1,202 @@
+<!doctype html>
+<!--
+  - This file is part of Adblock Plus <https://adblockplus.org/>,
+  - Copyright (C) 2006-present eyeo GmbH
+  -
+  - Adblock Plus is free software: you can redistribute it and/or modify
+  - it under the terms of the GNU General Public License version 3 as
+  - published by the Free Software Foundation.
+  -
+  - Adblock Plus is distributed in the hope that it will be useful,
+  - but WITHOUT ANY WARRANTY; without even the implied warranty of
+  - MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  - GNU General Public License for more details.
+  -
+  - You should have received a copy of the GNU General Public License
+  - along with Adblock Plus.  If not, see <http://www.gnu.org/licenses/>.
+-->
+<html>
+  <head>
+    <title>Adblock Plus</title>
+    <meta charset="utf-8" />
+    <script src="polyfill.js"></script>
+    <script defer src="popup.js"></script>
+  </head>
+  <body class="nohtml" tabindex="1" data-source="popup" hidden>
+    <header class="popup-header">
+      <img src="skin/icons/popup/logo.svg" alt="Adblock Plus" />
+      <a
+        id="premium-upgrade"
+        data-i18n="premium_upgrade"
+        class="premium upgrade"
+        target="_blank"
+      ></a>
+      <a
+        id="premium-manage"
+        class="premium manage premium-label"
+        dir="ltr"
+        target="_blank"
+        >Premium</a
+      >
+      <button id="options" data-i18n="options_short"></button>
+    </header>
+    <div id="notification" hidden></div>
+    <main>
+      <div id="idle-status">
+        <h2 data-i18n="idle_header"></h2>
+        <img src="skin/icons/idle.svg" alt="" />
+      </div>
+      <div id="page-status">
+        <h2 data-i18n="status_header"></h2>
+        <div class="domain status_block">
+          <div class="details">
+            <h3 data-i18n="status_domain"></h3>
+            <p id="blocking-domain"></p>
+          </div>
+          <io-circle-toggle checked></io-circle-toggle>
+        </div>
+        <div class="page status_block">
+          <div class="details">
+            <h3 data-i18n="status_page"></h3>
+            <p id="blocking-page"></p>
+          </div>
+          <io-circle-toggle checked></io-circle-toggle>
+        </div>
+      </div>
+      <div id="page-premium-cta">
+        <a target="_blank" data-link="premium" class="premium-block">
+          <span
+            class="premium-block-title"
+            data-i18n="premium_cookies_title"
+          ></span>
+          <span
+            class="premium-block-subtitle"
+            data-i18n="premium_cookies_subtitle"
+          ></span>
+        </a>
+        <a target="_blank" data-link="premium" class="premium-block">
+          <span
+            class="premium-block-title"
+            data-i18n="premium_distractions_title"
+          ></span>
+          <span
+            class="premium-block-subtitle"
+            data-i18n="premium_distractions_subtitle"
+          ></span>
+        </a>
+      </div>
+      <div id="page-premium-controls">
+        <article class="premium-block">
+          <div class="premium-block-text">
+            <span
+              class="premium-block-title"
+              data-i18n="premium_cookies_title"
+            ></span>
+            <span
+              class="premium-block-subtitle"
+              data-i18n="premium_cookies_subtitle"
+            ></span>
+          </div>
+
+          <io-circle-toggle id="premium-cookie-toggle"></io-circle-toggle>
+        </article>
+        <article class="premium-block">
+          <div class="premium-block-text">
+            <span
+              class="premium-block-title"
+              data-i18n="premium_distractions_title"
+            ></span>
+            <span
+              class="premium-block-subtitle"
+              data-i18n="premium_distractions_subtitle"
+            ></span>
+          </div>
+          <io-circle-toggle
+            id="premium-distractions-toggle"
+            checked
+          ></io-circle-toggle>
+        </article>
+      </div>
+      <div id="page-info">
+        <div id="default-container">
+          <h2 class="page-info-header" data-i18n="stats_header"></h2>
+          <div id="counter-panel" class="card">
+            <div class="stats">
+              <div id="stats-page">
+                <span data-i18n="stats_label_page"></span>
+                <strong class="amount"></strong>
+              </div>
+              <div id="stats-total">
+                <span data-i18n="stats_label_total"></span>
+                <strong class="amount"></strong>
+              </div>
+            </div>
+          </div>
+          <div class="options">
+            <button id="block-element">
+              <strong
+                data-i18n="easy_create_filter"
+                class="block background-icon"
+              ></strong>
+            </button>
+            <button id="issue-reporter">
+              <span
+                data-i18n="sendReport"
+                class="report background-icon"
+              ></span>
+            </button>
+          </div>
+        </div>
+        <div id="block-element-container">
+          <div id="block-element-info" class="card">
+            <strong data-i18n="easy_create_filter"></strong>
+            <span data-i18n="click_element_to_block_it"></span>
+            <div class="options">
+              <button id="block-element-cancel">
+                <span data-i18n="cancel" class="block background-icon"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="page-refresh">
+        <div class="card">
+          <strong data-i18n="refresh_this_page"></strong>
+          <span data-i18n="refresh_to_take_effect"></span>
+          <button data-i18n="options_refresh"></button>
+        </div>
+      </div>
+    </main>
+    <footer>
+      <io-popup-footer></io-popup-footer>
+    </footer>
+
+    <div
+      id="cookie-consent-modal"
+      class="cookie-consent-modal-container hidden"
+    >
+      <div class="cookie-consent-modal">
+        <h3
+          class="cookie-consent-modal-title"
+          data-i18n="options_dialog_optIn_premium_subscription_title"
+        ></h3>
+        <p
+          class="cookie-consent-modal-text"
+          data-i18n="options_dialog_optIn_premium_subscription_description"
+        ></p>
+        <div class="cookie-consent-modal-button-container">
+          <button
+            class="cookie-consent-modal-button"
+            id="cookie-consent-modal-close"
+            data-i18n="options_dialog_optIn_premium_subscription_reject"
+          ></button>
+          <button
+            class="cookie-consent-modal-button premium"
+            id="cookie-consent-modal-accept"
+            data-i18n="options_dialog_optIn_premium_subscription_confirm"
+          ></button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
