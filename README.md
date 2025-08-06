@@ -1,34 +1,45 @@
-# **Animepahe Auto Downloader** 📥
-This is a selenium-based Python project to automate the process of downloading anime from the Animepahe website. This project has been debugged and improved to be more robust and reliable.
+# AnimePahe Auto Downloader
 
-## **Prerequisites** ⚓
-- Google Chrome
+This project is a Python script that automates downloading anime episodes from AnimePahe. It uses Selenium to control a web browser, navigate the website, and download episodes based on user input.
 
-## **Set Up** 🔧
-1. Clone the project
-2. Install the requirements needed:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Run main.py:
-   ```
-   python main.py
-   ```
-4. Type the inputs needed
-    - Name of the Anime
-    - Pixels (720 or 1080)
-    - Starting Episode
-    - Ending Episode
-5. Sit back and relax while it is downloading
+## Features
 
-## **Video** 📹
-Here is the basic overview on how the project works
+-   Download a range of episodes for a specific anime.
+-   Select the desired download quality.
+-   Automatically handles different download providers (Kwik, Uqload).
+-   Includes an adblocker to prevent pop-ups and ads.
+-   Saves screenshots of errors for debugging.
 
-https://user-images.githubusercontent.com/62915062/218247826-287401b6-74b6-4902-b552-31112a94972f.mp4
+## Prerequisites
 
+-   Python 3.x
+-   Google Chrome browser
 
-## **Contribution** 🔥
-If you wish to help improve this project, fork this repo and submit your own pull request. If you discover a problem with this project, please report it to the issue page. Thank you very much   😊.
+## Installation
 
-## **Thank you** 💖
-If you like this project just click ⭐ and share it with others.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/animepahe-auto-downloader.git
+    cd animepahe-auto-downloader
+    ```
+2.  **Install the required Python packages:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Usage
+
+1.  **Run the script:**
+    ```bash
+    python main.py
+    ```
+2.  **Follow the on-screen prompts:**
+    -   Enter the name of the anime you want to download.
+    -   Enter the starting and ending episode numbers.
+    -   Choose the download quality (e.g., 720p, 1080p).
+
+The script will then open a Chrome browser window and start downloading the episodes. The downloaded files will be saved in the `anime_downloads` directory.
+
+## Disclaimer
+
+This script is for educational purposes only. Please respect the terms of service of the websites you visit. The developers of this script are not responsible for any misuse of this tool.
