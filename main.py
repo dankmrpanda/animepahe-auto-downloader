@@ -12,7 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, NoSuchWindowException
 import re
 import time
 import os # For creating directory for screenshots and downloads
@@ -57,8 +57,10 @@ def save_debug_info(driver, error_name):
         print(f"Could not save debug info: {e}")
 
 # --- User Input ---
-anime = input("Enter the name of the anime: ")
-pixels = input("Enter the quality of the video (e.g., 720 or 1080): ")
+# anime = input("Enter the name of the anime: ")
+# pixels = input("Enter the quality of the video (e.g., 720 or 1080): ")
+anime = "Necronomico and the Cosmic Horror Show"
+pixels = "720"
 start_ep_input = input("Enter the episode number to start from (hit enter to start from 1): ")
 start_ep = 1 if start_ep_input.strip() == '' else int(start_ep_input)
 end_ep_input = input("Enter the episode number to end at (hit enter to end at the latest): ")
@@ -248,7 +250,7 @@ try:
         )
         # Find link by partial href (usually more stable)
         start_episode_link = WebDriverWait(episode_list_container, DEFAULT_WAIT_TIME).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, f"a[href*='/{start_ep}']")) # Matches href containing /N
+            EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), ' - {start_ep} Online')]"))
         )
         print(f"Found link for episode {start_ep}. Clicking...")
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_episode_link)
@@ -280,10 +282,12 @@ try:
         save_debug_info(driver, f"start_episode_{start_ep}_error")
         driver.quit()
         exit()
+            
 
 
     # --- Loop Through Episodes ---
     current_ep = start_ep
+    original_window = driver.current_window_handle # Save the original window handle (basically animepahe player page)
     while current_ep <= end_ep:
         print(f"\n--- Processing Episode {current_ep} ---")
 
@@ -316,17 +320,78 @@ try:
             time.sleep(2)
 
             # --- Handle Pahewin/Download Page ---
-            print("Switching to download page (Pahewin/other)...")
-            if len(driver.window_handles) < 2:
-                print("Error: New download window/tab did not open.")
+            print("Cycling through tabs to close non-whitelisted sites...")
+            
+            whitelist = ["animepahe.ru", "pahe.win", "kwik.si"]
+            
+            # Wait a moment for all new tabs to potentially open
+            time.sleep(2) #increase time if tabs are loading in fast enough
+            
+            all_windows = driver.window_handles
+            for window_handle in all_windows:
+                driver.switch_to.window(window_handle)
+                if "https://animepahe.ru/" in driver.current_url:
+                    original_window = window_handle
+                    print(f"Original window set to: {driver.current_url}")
+                    break
+                
+            # time.sleep(2)
+            # Iterate through all windows and close those not in the whitelist
+            for window_handle in all_windows:
+                print(window_handle)
+                if window_handle == original_window:
+                    print(driver.current_url + " is original window, skipping...")
+                    continue
+                
+                # driver.switch_to.window(window_handle)
+                # url = driver.current_url
+                # is_whitelisted = any(domain in url for domain in whitelist)
+                # if not is_whitelisted:
+                #     print(f"Closing non-whitelisted tab: {url}")
+                # else:
+                #     print(f"Keeping whitelisted tab: {url}")
+                #     continue
+                try:
+                    driver.switch_to.window(window_handle)
+                    url = driver.current_url
+                    is_whitelisted = any(domain in url for domain in whitelist)
+                    time.sleep(0.2) #---------------------------------------------increase time if it closes entire window
+                    if not is_whitelisted:
+                        print(f"Closing non-whitelisted tab: {url}")
+                        driver.close()
+                    else:
+                        print(f"Keeping whitelisted tab: {url}")
+                except NoSuchWindowException:
+                    print("Window was already closed, continuing...")
+                    continue
+
+            # Switch back to the main window to find the correct download link
+            driver.switch_to.window(original_window)
+            
+            # After cleaning, find the correct download window to switch to
+            all_windows = driver.window_handles
+            download_window_found = False
+            if len(all_windows) > 1:
+                for window_handle in all_windows:
+                    if window_handle != original_window:
+                        driver.switch_to.window(window_handle)
+                        url = driver.current_url
+                        if "pahe.win" in url or "kwik.si" in url:
+                            print(f"Found and switched to download page: {url}")
+                            download_window_found = True
+                            break
+                
+                if not download_window_found:
+                    # If no specific download window is found, switch to the last opened one that isn't the main one
+                    driver.switch_to.window(all_windows[-1])
+                    print(f"Switched to the last open tab as a fallback: {driver.current_url}")
+
+            else:
+                print("Error: New download window/tab did not open or was closed.")
                 save_debug_info(driver, f"ep_{current_ep}_no_new_window")
                 print(f"Skipping episode {current_ep} due to download window issue.")
-                # Need robust logic to advance to next episode if possible
-                current_ep += 1 # Tentative increment
+                current_ep += 1
                 continue
-
-            driver.switch_to.window(driver.window_handles[-1])
-            print(f"Current URL: {driver.current_url}")
 
             # Handle potential intermediate pages (like Pahewin 'Continue')
             pahewin_continue_attempts = 3
