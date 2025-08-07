@@ -8,6 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -21,18 +22,14 @@ import traceback # For detailed error printing
 # --- Configuration ---
 DEFAULT_WAIT_TIME = 15 # Increased default wait time
 SCREENSHOT_DIR = "error_screenshots"
-# Define where downloads should go. Creates 'anime_downloads' subdir in script's directory.
-# You can change this to an absolute path like: r"C:\Users\YourUser\Downloads\Anime"
+
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "anime_downloads")
 # --- !!! IMPORTANT: SET PATH TO YOUR AD BLOCKER .crx FILE !!! ---
 # --- Make sure the file exists at this location ---
 # --- Example: Place ublock_origin.crx in the same folder as the script ---
-# AD_BLOCKER_PATH = os.path.join(os.getcwd(), "uBlock0.chromium.crx") # Adjust filename if needed
-# AD_BLOCKER_UNPACKED_PATH = os.path.join(os.getcwd(), "uBlock0.chromium") # Adjust folder name if needed
-
-AD_BLOCKER_PATH = os.path.join(os.getcwd(), "Adblock-Plus.crx") # Adjust filename if needed
-AD_BLOCKER_UNPACKED_PATH = os.path.join(os.getcwd(), "Adblock-Plus") # Adjust folder name if needed
-
+# AD_BLOCKER_PATH = os.path.join(os.getcwd(), "adblocker/uBlock0.chromium.crx") # Adjust filename if needed
+AD_BLOCKER_PATH = "./adblocker/uBlock0.chromium.crx"
+# AD_BLOCKER_UNPACKED_PATH = os.path.join(os.getcwd(), "adblocker/uBlock0.chromium") # Adjust folder name if needed
 
 # Create screenshot directory if it doesn't exist
 if not os.path.exists(SCREENSHOT_DIR):
@@ -67,7 +64,8 @@ end_ep_input = input("Enter the episode number to end at (hit enter to end at th
 # end_ep will be determined later if empty
 
 # --- Setup Chrome Driver ---
-options = webdriver.ChromeOptions()
+# options = webdriver.ChromeOptions()
+options = Options()
 options.add_argument("start-maximized")
 # options.add_argument("--headless") # Optional: Run in background
 # options.add_argument("--disable-gpu") # Often needed with headless
@@ -130,8 +128,6 @@ except Exception as e:
     exit()
 
 
-
-
 # --- Main Script Logic ---
 try:
     # Open Animepahe Website
@@ -183,26 +179,17 @@ try:
         save_debug_info(driver, "search_result_click_error")
         driver.quit()
         exit()
-    time.sleep(3)
+    time.sleep(1.5)
     # Get the total number of Anime Episodes
     print("Fetching total episode count...")
     try:
-        # --- !!! UPDATE THIS SELECTOR BASED ON INSPECTION !!! ---
-        # Example: Find the container first, then extract text
         details_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-            # Option 1: If a specific container exists
-    #----------------------------------------------------------------------------------------------------------------spot where error
             EC.presence_of_element_located((By.CSS_SELECTOR, "div.anime-info"))
-            # Option 2: A different class name you might find
-            # EC.presence_of_element_located((By.CLASS_NAME, "anime-details"))
-            # Option 3: If it's within a specific header/section
-            # EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'header')]/p"))
         )
         details_text = details_container.text
         print(f"Found details text block: '{details_text[:100]}...'") # Print start of text for debug
 
         # Try to extract the number more robustly
-        # Look for "NN Episodes" first
         match = re.search(r'(\d+)\s+Episodes', details_text, re.IGNORECASE)
         if not match:
              # Fallback: Look for just digits if the pattern above fails
@@ -243,8 +230,6 @@ try:
     # Navigate to the *player page* of the *starting* episode first.
     print(f"Navigating to starting episode: {start_ep}...")
     try:
-        # INSPECT the site structure for the correct selector!
-        # Example: 'episode-list-wrapper', '.episodes-container'
         episode_list_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
             EC.presence_of_element_located((By.CLASS_NAME, "episode-list-wrapper"))
         )
@@ -257,7 +242,7 @@ try:
         time.sleep(0.5)
         start_episode_link.click()
         print("Navigated to player page for starting episode.")
-        time.sleep(3)
+        time.sleep(2)
 
     except TimeoutException:
         print(f"Error: Could not find or click the link for starting episode {start_ep}.")
@@ -272,7 +257,7 @@ try:
              print("Retrying click with JavaScript...")
              driver.execute_script("arguments[0].click();", start_episode_link)
              print("Navigated to player page for starting episode using JavaScript click.")
-             time.sleep(3)
+             time.sleep(2)
          except Exception as js_e:
              print(f"JavaScript click also failed: {js_e}")
              driver.quit()
@@ -335,7 +320,7 @@ try:
                     print(f"Original window set to: {driver.current_url}")
                     break
                 
-            # time.sleep(2)
+            time.sleep(2)
             # Iterate through all windows and close those not in the whitelist
             for window_handle in all_windows:
                 print(window_handle)
@@ -355,7 +340,7 @@ try:
                     driver.switch_to.window(window_handle)
                     url = driver.current_url
                     is_whitelisted = any(domain in url for domain in whitelist)
-                    time.sleep(0.2) #---------------------------------------------increase time if it closes entire window
+                    time.sleep(0.5) #---------------------------------------------increase time if it closes entire window
                     if not is_whitelisted:
                         print(f"Closing non-whitelisted tab: {url}")
                         driver.close()
@@ -406,7 +391,7 @@ try:
                     time.sleep(0.5)
                     continue_button.click()
                     print("'Continue' button clicked.")
-                    time.sleep(3) # Wait for next page
+                    time.sleep(2) # Wait for next page
                     break
                 except TimeoutException:
                     print(f"'Continue' button not found on attempt {attempt + 1}/{pahewin_continue_attempts}.")
@@ -490,7 +475,7 @@ try:
                     time.sleep(0.5)
                     driver.execute_script("arguments[0].click();", next_episode_button)
                     print("Clicked 'Next Episode' button.")
-                    time.sleep(3) # Wait for next episode's player page to load
+                    time.sleep(2) # Wait for next episode's player page to load
                     current_ep += 1
                 except TimeoutException:
                     print(f"Error: Could not find or click the 'Next Episode' button after episode {current_ep}.")
