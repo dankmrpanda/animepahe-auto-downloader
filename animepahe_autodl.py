@@ -16,6 +16,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import time
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+
 
 # --- Configuration ---
 DEFAULT_WAIT_TIME = 15
@@ -286,7 +289,7 @@ class Animepahe:
         print(f"\r * Requesting Episodes : {len(episode_list_data)} OK!")
         return episode_list_data
 
-    def download_file(self, url, fallback_filename):
+    def download_file(self, url, fallback_filename, position):
         with self.session.get(url, stream=True) as r:
             r.raise_for_status()
             
@@ -298,22 +301,23 @@ class Animepahe:
                     filename = unquote(filename_match.group(1))
 
             filename = "".join(i for i in filename if i not in r'<>:"/|?*')
-            
-            print(f" * Downloading: {filename}")
+
             total_size = int(r.headers.get('content-length', 0))
-            with open(filename, 'wb') as f:
-                downloaded = 0
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        done = int(50 * downloaded / total_size)
-                        sys.stdout.write(f"\r[{'=' * done}{' ' * (50-done)}] {downloaded / (1024*1024):.2f}MB / {total_size / (1024*1024):.2f}MB")
-                        sys.stdout.flush()
-                    else:
-                        sys.stdout.write(f"\rDownloaded {downloaded / (1024*1024):.2f}MB")
-                        sys.stdout.flush()
-        sys.stdout.write('\n')
+            chunk_size = 8192
+
+            with tqdm(
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=filename,
+                position=position,
+                leave=True
+            ) as pbar:
+                with open(filename, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
 
     def extractor(self, is_series, link, target_res, is_all_episodes, episodes, export_filename, export_links):
         print("\n * targetResolution: ", end="")
@@ -341,30 +345,46 @@ class Animepahe:
         ep_data = self.extract_link_content(link, episodes, target_res, is_series, is_all_episodes)
         
         direct_links = []
+        download_tasks = []
         log_ep_num = 1 if is_all_episodes else episodes[0]
-        for i, data in enumerate(ep_data):
-            print(f"\r * Processing : EP{log_ep_num:02d}", end="")
+        for data in ep_data:
             try:
+                print(f"\r * Processing : EP{log_ep_num:02d}", end="")
                 d_link = self.kwik_pahe.extract_kwik_link(self.session, data['dPaheLink'])
-                direct_links.append(d_link)
+                direct_links.append((d_link, f"EP{log_ep_num:02d}_{data['epRes']}p.mp4"))
                 print(" OK!")
-                if not export_links:
-                    fallback_filename = f"EP{log_ep_num:02d}_{data['epRes']}p.mp4"
-                    self.download_file(d_link, fallback_filename)
-
             except Exception as e:
                 print(f" FAIL! Reason: {e}")
             log_ep_num += 1
 
         if export_links:
             with open(export_filename, 'w') as f:
-                for d_link in direct_links:
-                    f.write(d_link + '\n')
+                for link_url, _ in direct_links:
+                    f.write(link_url + '\n')
             print(f"\n * Exported : {export_filename}\n")
+            return
+
+        # ---- Parallel Downloads ----
+        direct_links.sort(key=lambda x: int(re.search(r'EP(\d+)', x[1]).group(1)))
+        print("\n * Starting parallel downloads...")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+            for pos, (url, filename) in enumerate(direct_links):
+                futures.append(executor.submit(self.download_file, url, filename, pos))
+
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"[ERROR] {e}")
 
 
 def main():
     anime = input("Enter the name of the anime: ")
+    pixels = input("Enter the quality of the video (e.g., 720 or 1080, 0 for best, -1 for worst): ")
+    start_ep_input = input("Enter the episode number to start from (hit enter to start from 1): ")
+    start_ep = 1 if start_ep_input.strip() == '' else int(start_ep_input)
+    end_ep_input = input("Enter the episode number to end at (hit enter to end at the latest): ")
     
     options = Options()
     options.add_argument("start-maximized")
@@ -418,10 +438,7 @@ def main():
         print(f"Anime page link: {anime_link}")
         driver.quit()
 
-        pixels = input("Enter the quality of the video (e.g., 720 or 1080, 0 for best, -1 for worst): ")
-        start_ep_input = input("Enter the episode number to start from (hit enter to start from 1): ")
-        start_ep = 1 if start_ep_input.strip() == '' else int(start_ep_input)
-        end_ep_input = input("Enter the episode number to end at (hit enter to end at the latest): ")
+   
         
         is_all_episodes = end_ep_input.strip() == ''
         episodes = []
