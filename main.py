@@ -1,9 +1,10 @@
-# Animepahe Auto Downloader v2.2 (Revised - No FDM)
-# Automated Anime Downloading from the Animepahe Website Using Selenium Python
-# Created by: Jookie262
-# Revised by: AI Assistant based on user feedback
 
-# Import Libraries
+import requests
+import re
+import argparse
+import sys
+from urllib.parse import unquote
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -12,36 +13,22 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, NoSuchWindowException
-import re
+from selenium.common.exceptions import TimeoutException
 import time
-import os # For creating directory for screenshots and downloads
-import traceback # For detailed error printing
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+
 
 # --- Configuration ---
-DEFAULT_WAIT_TIME = 15 # Increased default wait time
+DEFAULT_WAIT_TIME = 15
 SCREENSHOT_DIR = "error_screenshots"
-
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "anime_downloads")
-# --- !!! IMPORTANT: SET PATH TO YOUR AD BLOCKER .crx FILE !!! ---
-# --- Make sure the file exists at this location ---
-# --- Example: Place ublock_origin.crx in the same folder as the script ---
-# AD_BLOCKER_PATH = os.path.join(os.getcwd(), "adblocker/uBlock0.chromium.crx") # Adjust filename if needed
-AD_BLOCKER_PATH = "./adblocker/uBlock0.chromium.crx"
-# AD_BLOCKER_UNPACKED_PATH = os.path.join(os.getcwd(), "adblocker/uBlock0.chromium") # Adjust folder name if needed
 
-# Create screenshot directory if it doesn't exist
 if not os.path.exists(SCREENSHOT_DIR):
     os.makedirs(SCREENSHOT_DIR)
-    print(f"Created directory: {SCREENSHOT_DIR}")
-
-# Create download directory if it doesn't exist
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
-    print(f"Created directory: {DOWNLOAD_DIR}")
-print(f"Downloads will be saved to: {DOWNLOAD_DIR}")
-
 
 def save_debug_info(driver, error_name):
     """Saves screenshot for debugging."""
@@ -53,481 +40,444 @@ def save_debug_info(driver, error_name):
     except Exception as e:
         print(f"Could not save debug info: {e}")
 
-# --- User Input ---
-# anime = input("Enter the name of the anime: ")
-# pixels = input("Enter the quality of the video (e.g., 720 or 1080): ")
-anime = "Necronomico and the Cosmic Horror Show"
-pixels = "720"
-start_ep_input = input("Enter the episode number to start from (hit enter to start from 1): ")
-start_ep = 1 if start_ep_input.strip() == '' else int(start_ep_input)
-end_ep_input = input("Enter the episode number to end at (hit enter to end at the latest): ")
-# end_ep will be determined later if empty
+class KwikPahe:
+    def __init__(self):
+        self.base_alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
 
-# --- Setup Chrome Driver ---
-# options = webdriver.ChromeOptions()
-options = Options()
-options.add_argument("start-maximized")
-# options.add_argument("--headless") # Optional: Run in background
-# options.add_argument("--disable-gpu") # Often needed with headless
+    def _0xe16c(self, IS, Iy, ms):
+        h = self.base_alphabet[:Iy]
+        i = self.base_alphabet[:ms]
+        
+        j = 0
+        for idx, char in enumerate(reversed(IS)):
+            pos = h.find(char)
+            if pos != -1:
+                j += pos * (Iy ** idx)
 
-# Configure Chrome preferences for direct downloads
-prefs = {
-    "download.default_directory": DOWNLOAD_DIR, # Set download directory
-    "download.prompt_for_download": False,  # Disable "Save As" dialog
-    "download.directory_upgrade": True,     # Allow download directory management
-    "safebrowsing.enabled": True,           # Enable safe browsing checks
-    "extensions.ui.developer_mode": True
-}
-options.add_experimental_option("prefs", prefs)
-# options.add_experimental_option('excludeSwitches', ['enable-logging']) # May hide useful info
+        if j == 0:
+            return i[0]
 
-options.add_extension(AD_BLOCKER_PATH)
+        k = ""
+        while j > 0:
+            k = i[j % ms] + k
+            j //= ms
+        
+        return int(k)
 
-
-# # --- !!! Load Ad Blocker as Unpacked Extension !!! ---
-# if os.path.isdir(AD_BLOCKER_UNPACKED_PATH) and os.path.exists(os.path.join(AD_BLOCKER_UNPACKED_PATH, 'manifest.json')):
-#     print(f"Attempting to load unpacked extension from: {AD_BLOCKER_UNPACKED_PATH}")
-#     # Use add_argument with --load-extension=PATH
-#     options.add_argument(f"--load-extension={AD_BLOCKER_UNPACKED_PATH}")
-#     print("Unpacked ad blocker extension specified.")
-#     # Keep the delay after driver start to allow initialization
-# else:
-#     print(f"Warning: Unpacked ad blocker directory not found or invalid at {AD_BLOCKER_UNPACKED_PATH}")
-#     print("Proceeding without ad blocker. Redirects/ads might cause issues.")
-
-# # --- Add Ad Blocker Extension ---
-# if os.path.exists(AD_BLOCKER_PATH):
-#     print(f"Attempting to load extension: {AD_BLOCKER_PATH}")
-#     try:
-#         options.add_extension(AD_BLOCKER_PATH)
-#         print("Ad blocker extension added.")
-#         # Extensions might take a moment to load after browser starts
-#         time.sleep(5) # Add a small delay after driver starts later
-#     except Exception as e:
-#         print(f"Warning: Could not load extension from {AD_BLOCKER_PATH}. Error: {e}")
-#         print("Proceeding without ad blocker. Redirects/ads might cause issues.")
-# else:
-#     print(f"Warning: Ad blocker extension not found at {AD_BLOCKER_PATH}")
-#     print("Proceeding without ad blocker. Redirects/ads might cause issues.")
-
-# --- REMOVED FDM EXTENSION LOADING ---
-# try:
-#     options.add_extension('fdm.crx')
-# except Exception as e:
-#     print(f"Warning: Could not load fdm.crx extension...")
-
-try:
-    print("Setting up Chrome Driver...")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    actionChains = ActionChains(driver)
-    print("Driver setup complete.")
-except Exception as e:
-    print(f"Fatal Error: Failed to initialize Chrome Driver: {e}")
-    print("Please ensure Chrome is installed and webdriver-manager can download the driver.")
-    exit()
-
-
-# --- Main Script Logic ---
-try:
-    # Open Animepahe Website
-    print(f"Navigating to Animepahe...")
-    driver.get("https://animepahe.com/") # Use .com, though it might redirect
-    time.sleep(2) # Allow initial page load/redirects
-    # Type the anime text in the search bar
-    print(f"Searching for anime: {anime}")
-    try:
-        search_box = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-            EC.presence_of_element_located((By.NAME, "q"))
-        )
-        search_box.send_keys(anime)
-        time.sleep(0.3) # Small pause allows JS to potentially react to initial input
-        search_box.send_keys(Keys.BACKSPACE)
-        time.sleep(0.1) # Tiny pause
-        # Send the last character of the original anime name string
-        search_box.send_keys(anime[-1])
-        print(f"Typed '{anime}', backspaced, retyped last character ('{anime[-1]}').")
-        time.sleep(0.5) # Give a moment for results to potentially update before hitting Enter
-        print("Search submitted.")
-    except TimeoutException:
-        print("Error: Could not find the search bar (By.NAME, 'q'). Website structure might have changed.")
-        save_debug_info(driver, "search_bar_not_found")
-        driver.quit()
-        exit()
-
-    # Click the first element in the result
-    print("Looking for search results...")
-    try:
-        # INSPECT the site structure for the correct selector!
-        # Examples: 'search-results', 'p-search-results', 'results-container'
-        search_results_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-             EC.presence_of_element_located((By.CLASS_NAME, "search-results"))
-        )
-        # Find the first link within the results container
-        first_result_link = WebDriverWait(search_results_container, DEFAULT_WAIT_TIME).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "li > a")) # Assumes li > a structure
-        )
-        print(f"Found first result: {first_result_link.text}. Clicking...")
-        first_result_link.click()
-    except TimeoutException:
-        print(f"Error: Anime '{anime}' not found or search results structure changed.")
-        save_debug_info(driver, "anime_not_found")
-        driver.quit()
-        exit()
-    except Exception as e:
-        print(f"An unexpected error occurred while clicking search result: {e}")
-        save_debug_info(driver, "search_result_click_error")
-        driver.quit()
-        exit()
-    time.sleep(1.5)
-    # Get the total number of Anime Episodes
-    print("Fetching total episode count...")
-    try:
-        details_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.anime-info"))
-        )
-        details_text = details_container.text
-        print(f"Found details text block: '{details_text[:100]}...'") # Print start of text for debug
-
-        # Try to extract the number more robustly
-        match = re.search(r'(\d+)\s+Episodes', details_text, re.IGNORECASE)
-        if not match:
-             # Fallback: Look for just digits if the pattern above fails
-             print("Could not find 'NN Episodes' pattern, searching for any digits...")
-             match = re.search(r'(\d+)', details_text)
-
-        if match:
-            num_episode_total = int(match.group(1))
-            print(f"Successfully extracted total episodes: {num_episode_total}")
-        else:
-            print(f"Warning: Could not extract episode number from text: '{details_text}'")
-            save_debug_info(driver, "episode_count_parsing_failed")
-            num_episode_total = 0 # Set a default
-
-        # --- Rest of the logic ---
-        if num_episode_total == 0 and end_ep_input.strip() == '':
-             print("Error: Could not determine total episodes and no end episode specified. Please check the selectors or specify an end episode.")
-             driver.quit()
-             exit()
-
-        end_ep = num_episode_total if end_ep_input.strip() == '' else int(end_ep_input)
-        print(f"Targeting episodes from {start_ep} to {end_ep}.")
-
-    except TimeoutException:
-        # This error means the container selector itself failed
-        print("Error: Could not find the element/container holding the episode count. Page structure likely changed.")
-        print(">>> Please inspect the anime page on Animepahe manually and update the CSS_SELECTOR/XPATH in the script.")
-        save_debug_info(driver, "episode_count_container_not_found")
-        driver.quit()
-        exit()
-    except Exception as e:
-        print(f"An unexpected error occurred while getting episode count: {e}")
-        traceback.print_exc() # Print full traceback for unexpected errors
-        save_debug_info(driver, "episode_count_error")
-        driver.quit()
-        exit()
-
-    # Navigate to the *player page* of the *starting* episode first.
-    print(f"Navigating to starting episode: {start_ep}...")
-    try:
-        episode_list_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "episode-list-wrapper"))
-        )
-        # Find link by partial href (usually more stable)
-        start_episode_link = WebDriverWait(episode_list_container, DEFAULT_WAIT_TIME).until(
-            EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), ' - {start_ep} Online')]"))
-        )
-        print(f"Found link for episode {start_ep}. Clicking...")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", start_episode_link)
-        time.sleep(0.5)
-        start_episode_link.click()
-        print("Navigated to player page for starting episode.")
-        time.sleep(2)
-
-    except TimeoutException:
-        print(f"Error: Could not find or click the link for starting episode {start_ep}.")
-        print("Check if the episode exists and if the selectors for episode list/links are correct.")
-        save_debug_info(driver, f"start_episode_{start_ep}_not_found")
-        driver.quit()
-        exit()
-    except ElementClickInterceptedException:
-         print(f"Error: Clicking starting episode {start_ep} link was intercepted (likely by an ad/overlay).")
-         save_debug_info(driver, f"start_episode_{start_ep}_intercepted")
-         try:
-             print("Retrying click with JavaScript...")
-             driver.execute_script("arguments[0].click();", start_episode_link)
-             print("Navigated to player page for starting episode using JavaScript click.")
-             time.sleep(2)
-         except Exception as js_e:
-             print(f"JavaScript click also failed: {js_e}")
-             driver.quit()
-             exit()
-    except Exception as e:
-        print(f"An unexpected error occurred navigating to the starting episode: {e}")
-        save_debug_info(driver, f"start_episode_{start_ep}_error")
-        driver.quit()
-        exit()
+    def decode_js_style(self, Hb, Wg, Of, Jg):
+        gj = ""
+        i = 0
+        while i < len(Hb):
+            s = ""
+            while i < len(Hb) and Hb[i] != Wg[Jg]:
+                s += Hb[i]
+                i += 1
             
+            for j in range(len(Wg)):
+                s = s.replace(Wg[j], str(j))
 
+            gj += chr(self._0xe16c(s, Jg, 10) - Of)
+            i += 1
+        
+        return gj
 
-    # --- Loop Through Episodes ---
-    current_ep = start_ep
-    original_window = driver.current_window_handle # Save the original window handle (basically animepahe player page)
-    while current_ep <= end_ep:
-        print(f"\n--- Processing Episode {current_ep} ---")
+    def fetch_kwik_direct(self, kwik_link, token, kwik_session):
+        headers = {
+            "referer": kwik_link,
+            "cookie": f"kwik_session={kwik_session}",
+        }
+        data = {"_token": token}
+        
+        response = requests.post(kwik_link, headers=headers, data=data, allow_redirects=False)
+        
+        if response.status_code == 302:
+            return response.headers.get("Location")
+        else:
+            raise RuntimeError(f"Redirect Location not found in response from {kwik_link}")
+
+    def fetch_kwik_dlink(self, kwik_link, retries=5):
+        if retries <= 0:
+            raise RuntimeError("Kwik fetch failed: exceeded retry limit")
 
         try:
-            # Click the download button/menu
-            print("Clicking download menu...")
-            # INSPECT site for correct ID/selector
-            download_menu_button = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-                EC.element_to_be_clickable((By.ID, "downloadMenu"))
-            )
-            download_menu_button.click()
-            time.sleep(1)
+            response = requests.get(kwik_link)
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to Get Kwik from {kwik_link}, StatusCode: {response.status_code}")
 
-            # Find and click the desired quality link
-            print(f"Selecting quality: {pixels}p...")
-            # INSPECT site for correct ID/selector
-            download_options_container = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-                EC.visibility_of_element_located((By.ID, "pickDownload"))
-            )
-            quality_link = WebDriverWait(download_options_container, DEFAULT_WAIT_TIME).until(
-                EC.element_to_be_clickable((By.XPATH, f".//a[contains(text(), '{pixels}p')]"))
-            )
-            print(f"Found quality link: {quality_link.text}. Clicking...")
+            clean_text = response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+            
+            kwik_session_match = re.search(r"kwik_session=([^;]*);", response.headers.get("set-cookie", ""))
+            kwik_session = kwik_session_match.group(1) if kwik_session_match else ""
+
+            encoded_match = re.search(r'\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)', clean_text)
+            if not encoded_match:
+                return self.fetch_kwik_dlink(kwik_link, retries - 1)
+
+            encoded_string, alphabet_key, offset, base = encoded_match.groups()
+            offset = int(offset)
+            base = int(base)
+
+            decoded_string = self.decode_js_style(encoded_string, alphabet_key, offset, base)
+            
+            link_match = re.search(r'action="([^"]+)"', decoded_string)
+            token_match = re.search(r'value="([^"]+)"', decoded_string)
+
+            if not link_match or not token_match:
+                return self.fetch_kwik_dlink(kwik_link, retries - 1)
+
+            link = link_match.group(1)
+            token = token_match.group(1)
+            
+            return self.fetch_kwik_direct(link, token, kwik_session)
+        except Exception:
+            return self.fetch_kwik_dlink(kwik_link, retries - 1)
+
+    def extract_kwik_link(self, session, link):
+        response = session.get(link)
+        if response.status_code != 200:
+            raise RuntimeError(f"Failed to Get Kwik from {link}, StatusCode: {response.status_code}")
+
+        clean_text = response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+        
+        kwik_link = None
+        kwik_link_match = re.search(r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', clean_text)
+
+        if kwik_link_match:
+            kwik_link = kwik_link_match.group(1)
+        else:
+            encoded_match = re.search(r'\(\s*"([^",]*)"\s*,\s*\d+\s*,\s*"([^",]*)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+[a-zA-Z]?\s*\)', clean_text)
+            if not encoded_match:
+                raise RuntimeError(f"Failed to extract encoding parameters from {link}")
+            
+            encoded_string, alphabet_key, offset, base = encoded_match.groups()
+            offset = int(offset)
+            base = int(base)
+
+            decoded_string = self.decode_js_style(encoded_string, alphabet_key, offset, base)
+            kwik_link_match = re.search(r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', decoded_string)
+            if not kwik_link_match:
+                raise RuntimeError("Failed to extract Kwik link from decoded content")
+            kwik_link = kwik_link_match.group(1).replace('/d/', '/f/')
+
+
+        return self.fetch_kwik_dlink(kwik_link)
+
+
+class Animepahe:
+    def __init__(self):
+        self.kwik_pahe = KwikPahe()
+        self.session = requests.Session()
+        self.session.headers.update({
+            "accept": "application/json, text/javascript, */*; q=0.0",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0"
+        })
+        self.session.cookies.set("__ddg2_", "")
+
+    def get_headers(self, link):
+        headers = self.session.headers.copy()
+        headers["referer"] = link
+        return headers
+
+    def fetch_metadata(self, link):
+        print("\n\r * Requesting Info..", end="")
+        response = self.session.get(link, headers=self.get_headers(link))
+        print("\r * Requesting Info : ", end="")
+        if response.status_code != 200:
+            print("FAILED!")
+            raise RuntimeError(f"Failed to fetch {link}, StatusCode: {response.status_code}")
+        else:
+            print("OK!")
+
+    def fetch_episode(self, link, target_res):
+        response = self.session.get(link, headers=self.get_headers(link))
+        if response.status_code != 200:
+            print(f"\n * Error: Failed to fetch {link}, StatusCode {response.status_code}\n")
+            return {}
+
+        episode_data = []
+        for match in re.finditer(r'href="(https://pahe\.win/\S*)"[^>]*>([^)]*\))[^<]*<', response.text):
+            d_pahe_link, ep_name = match.groups()
+            content = {
+                "dPaheLink": unquote(d_pahe_link),
+                "epName": unquote(ep_name)
+            }
+            res_match = re.search(r'\b(\d{3,4})p\b', ep_name)
+            content["epRes"] = res_match.group(1) if res_match else "0"
+            episode_data.append(content)
+
+        if not episode_data:
+            raise RuntimeError(f"\n No episodes found in {link}")
+
+        selected_ep_map = None
+        if target_res == 0: # Highest
+            selected_ep_map = max(episode_data, key=lambda x: int(x['epRes']))
+        elif target_res == -1: # Lowest
+            selected_ep_map = min(episode_data, key=lambda x: int(x['epRes']))
+        else: # Custom
+            for episode in episode_data:
+                if int(episode['epRes']) == target_res:
+                    selected_ep_map = episode
+                    break
+            if not selected_ep_map:
+                selected_ep_map = max(episode_data, key=lambda x: int(x['epRes']))
+        
+        return selected_ep_map
+
+    def get_series_episode_count(self, link):
+        anime_id_match = re.search(r"anime/([a-f0-9-]{36})", link)
+        if not anime_id_match:
+            raise ValueError("Invalid anime link format")
+        anime_id = anime_id_match.group(1)
+
+        api_url = f"https://animepahe.si/api?m=release&id={anime_id}&sort=episode_asc&page=1"
+        response = self.session.get(api_url, headers=self.get_headers(link))
+        if response.status_code != 200:
+            raise RuntimeError(f"Failed to fetch episode count from {api_url}, status code: {response.status_code}")
+        
+        return response.json().get("total", 0)
+
+    def fetch_series(self, link, ep_count, is_all_episodes, episodes):
+        anime_id_match = re.search(r"anime/([a-f0-9-]{36})", link)
+        if not anime_id_match:
+            raise ValueError("Invalid anime link format")
+        anime_id = anime_id_match.group(1)
+
+        links = []
+        start_page = 1
+        end_page = (ep_count + 29) // 30
+        if not is_all_episodes:
+            start_page = (episodes[0] + 29) // 30
+            end_page = (episodes[1] + 29) // 30
+
+        for page in range(start_page, end_page + 1):
+            api_url = f"https://animepahe.si/api?m=release&id={anime_id}&sort=episode_asc&page={page}"
+            response = self.session.get(api_url, headers=self.get_headers(link))
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to fetch series data from {api_url}, status code: {response.status_code}")
+            
+            for episode in response.json().get("data", []):
+                session = episode.get("session")
+                if session:
+                    links.append(f"https://animepahe.si/play/{anime_id}/{session}")
+        return links
+
+    def extract_link_content(self, link, episodes, target_res, is_series, is_all_episodes):
+        episode_list_data = []
+        if is_series:
+            ep_count = self.get_series_episode_count(link)
+            series_ep_links = self.fetch_series(link, ep_count, is_all_episodes, episodes)
+            
+            start_index = 0
+            end_index = len(series_ep_links)
+            if not is_all_episodes:
+                start_index = episodes[0] - 1
+                end_index = episodes[1]
+
+            for i in range(start_index, end_index):
+                p_link = series_ep_links[i]
+                print(f"\r * Requesting Episode : EP{i+1:02d} ", end="")
+                sys.stdout.flush()
+                ep_content = self.fetch_episode(p_link, target_res)
+                if ep_content:
+                    episode_list_data.append(ep_content)
+        else:
+            ep_content = self.fetch_episode(link, target_res)
+            if ep_content:
+                episode_list_data.append(ep_content)
+
+        print(f"\r * Requesting Episodes : {len(episode_list_data)} OK!")
+        return episode_list_data
+
+    def download_file(self, url, fallback_filename, position, download_dir):
+        with self.session.get(url, stream=True) as r:
+            r.raise_for_status()
+            
+            filename = fallback_filename
+            content_disposition = r.headers.get('content-disposition')
+            if content_disposition:
+                filename_match = re.search(r'filename="([^"]+)"', content_disposition)
+                if filename_match:
+                    filename = unquote(filename_match.group(1))
+
+            filename = "".join(i for i in filename if i not in r'<>:"/|?*')
+            filepath = os.path.join(download_dir, filename)
+
+            total_size = int(r.headers.get('content-length', 0))
+            chunk_size = 8192
+
+            with tqdm(
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=filename,
+                position=position,
+                leave=True
+            ) as pbar:
+                with open(filepath, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+
+    def extractor(self, is_series, link, target_res, is_all_episodes, episodes, export_filename, export_links, anime_title="Unknown"):
+        # Create anime-specific download directory
+        safe_title = "".join(i for i in anime_title if i not in r'<>:"/|?*')
+        anime_download_dir = os.path.join(DOWNLOAD_DIR, safe_title)
+        if not os.path.exists(anime_download_dir):
+            os.makedirs(anime_download_dir)
+        
+        print(f"\n * Anime Title: {anime_title}")
+        print(f" * Download Folder: {anime_download_dir}")
+        print(" * targetResolution: ", end="")
+        if target_res == 0:
+            print("Max Available")
+        elif target_res == -1:
+            print("Lowest Available")
+        else:
+            print(f"{target_res}p")
+        
+        print(f" * exportLinks: {export_links}", end="")
+        if export_links and export_filename != "links.txt":
+            print(f" [{export_filename}]")
+        else:
+            print()
+
+        if is_series:
+            print(" * episodesRange: ", end="")
+            if is_all_episodes:
+                print("All")
+            else:
+                print(f"[{episodes[0]}-{episodes[1]}]")
+
+        self.fetch_metadata(link)
+        ep_data = self.extract_link_content(link, episodes, target_res, is_series, is_all_episodes)
+        
+        direct_links = []
+        download_tasks = []
+        log_ep_num = 1 if is_all_episodes else episodes[0]
+        for data in ep_data:
             try:
-                quality_link.click()
-            except ElementClickInterceptedException:
-                print("Quality link click intercepted, trying JavaScript click...")
-                driver.execute_script("arguments[0].click();", quality_link)
+                print(f"\r * Processing : EP{log_ep_num:02d}", end="")
+                d_link = self.kwik_pahe.extract_kwik_link(self.session, data['dPaheLink'])
+                direct_links.append((d_link, f"EP{log_ep_num:02d}_{data['epRes']}p.mp4"))
+                print(" OK!")
+            except Exception as e:
+                print(f" FAIL! Reason: {e}")
+            log_ep_num += 1
 
-            time.sleep(2)
+        if export_links:
+            with open(export_filename, 'w') as f:
+                for link_url, _ in direct_links:
+                    f.write(link_url + '\n')
+            print(f"\n * Exported : {export_filename}\n")
+            return
 
-            # --- Handle Pahewin/Download Page ---
-            print("Cycling through tabs to close non-whitelisted sites...")
-            
-            whitelist = ["animepahe.ru", "pahe.win", "kwik.si"]
-            
-            # Wait a moment for all new tabs to potentially open
-            time.sleep(2) #increase time if tabs are loading in fast enough
-            
-            all_windows = driver.window_handles
-            for window_handle in all_windows:
-                driver.switch_to.window(window_handle)
-                if "https://animepahe.ru/" in driver.current_url:
-                    original_window = window_handle
-                    print(f"Original window set to: {driver.current_url}")
-                    break
-                
-            time.sleep(2)
-            # Iterate through all windows and close those not in the whitelist
-            for window_handle in all_windows:
-                print(window_handle)
-                if window_handle == original_window:
-                    print(driver.current_url + " is original window, skipping...")
-                    continue
-                
-                # driver.switch_to.window(window_handle)
-                # url = driver.current_url
-                # is_whitelisted = any(domain in url for domain in whitelist)
-                # if not is_whitelisted:
-                #     print(f"Closing non-whitelisted tab: {url}")
-                # else:
-                #     print(f"Keeping whitelisted tab: {url}")
-                #     continue
+        # ---- Parallel Downloads ----
+        direct_links.sort(key=lambda x: int(re.search(r'EP(\d+)', x[1]).group(1)))
+        print(f"\n * Starting parallel downloads to: {anime_download_dir}")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+            for pos, (url, filename) in enumerate(direct_links):
+                futures.append(executor.submit(self.download_file, url, filename, pos, anime_download_dir))
+
+            for future in as_completed(futures):
                 try:
-                    driver.switch_to.window(window_handle)
-                    url = driver.current_url
-                    is_whitelisted = any(domain in url for domain in whitelist)
-                    time.sleep(0.5) #---------------------------------------------increase time if it closes entire window
-                    if not is_whitelisted:
-                        print(f"Closing non-whitelisted tab: {url}")
-                        driver.close()
-                    else:
-                        print(f"Keeping whitelisted tab: {url}")
-                except NoSuchWindowException:
-                    print("Window was already closed, continuing...")
-                    continue
-
-            # Switch back to the main window to find the correct download link
-            driver.switch_to.window(original_window)
-            
-            # After cleaning, find the correct download window to switch to
-            all_windows = driver.window_handles
-            download_window_found = False
-            if len(all_windows) > 1:
-                for window_handle in all_windows:
-                    if window_handle != original_window:
-                        driver.switch_to.window(window_handle)
-                        url = driver.current_url
-                        if "pahe.win" in url or "kwik.si" in url:
-                            print(f"Found and switched to download page: {url}")
-                            download_window_found = True
-                            break
-                
-                if not download_window_found:
-                    # If no specific download window is found, switch to the last opened one that isn't the main one
-                    driver.switch_to.window(all_windows[-1])
-                    print(f"Switched to the last open tab as a fallback: {driver.current_url}")
-
-            else:
-                print("Error: New download window/tab did not open or was closed.")
-                save_debug_info(driver, f"ep_{current_ep}_no_new_window")
-                print(f"Skipping episode {current_ep} due to download window issue.")
-                current_ep += 1
-                continue
-
-            # Handle potential intermediate pages (like Pahewin 'Continue')
-            pahewin_continue_attempts = 3
-            for attempt in range(pahewin_continue_attempts):
-                try:
-                    # INSPECT site for 'Continue' button selector
-                    continue_button = WebDriverWait(driver, 10).until(
-                         EC.element_to_be_clickable((By.LINK_TEXT, "Continue"))
-                    )
-                    print("Found 'Continue' button, clicking...")
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", continue_button)
-                    time.sleep(0.5)
-                    continue_button.click()
-                    print("'Continue' button clicked.")
-                    time.sleep(2) # Wait for next page
-                    break
-                except TimeoutException:
-                    print(f"'Continue' button not found on attempt {attempt + 1}/{pahewin_continue_attempts}.")
-                    if attempt == pahewin_continue_attempts - 1:
-                         print("Proceeding, assuming we are on the final download page.")
-                    time.sleep(1)
+                    future.result()
                 except Exception as e:
-                    print(f"Error clicking 'Continue' button: {e}")
-                    save_debug_info(driver, f"ep_{current_ep}_continue_error")
-                    break
+                    print(f"[ERROR] {e}")
 
 
-            # Handle the final download page (e.g., Kwik)
-            kwik_download_attempts = 3
-            download_started = False
-            for attempt in range(kwik_download_attempts):
-                 time.sleep(2)
-                 print(f"Looking for final download button (Attempt {attempt+1})...")
-                 print(f"Current URL (final page check): {driver.current_url}")
-                 try:
-                     # INSPECT Kwik/hoster page for the correct download button selector
-                     final_download_button = WebDriverWait(driver, 20).until(
-                         EC.element_to_be_clickable((By.CSS_SELECTOR, "form button[type='submit']"))
-                     )
-                     print("Found final download button. Clicking...")
-                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", final_download_button)
-                     time.sleep(0.5)
+def main():
+    anime = input("Enter the name of the anime: ")
+    pixels = input("Enter the quality of the video (e.g., 720 or 1080, 0 for best, -1 for worst): ")
+    start_ep_input = input("Enter the episode number to start from (hit enter to start from 1): ")
+    start_ep = 1 if start_ep_input.strip() == '' else int(start_ep_input)
+    end_ep_input = input("Enter the episode number to end at (hit enter to end at the latest): ")
+    
+    options = Options()
+    options.add_argument("start-maximized")
+    # options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
 
-                     final_download_button.click()
-                     # Download should now start via Chrome's manager
-                     print(f"Download initiated for Episode {current_ep} (check browser downloads in '{DOWNLOAD_DIR}').")
-                     download_started = True
-                     # Allow some time for the download to actually begin before closing the tab
-                     time.sleep(5) # Adjust if downloads seem to be cut off
-                     break
+    try:
+        print("Setting up Chrome Driver...")
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        print("Driver setup complete.")
+    except Exception as e:
+        print(f"Fatal Error: Failed to initialize Chrome Driver: {e}")
+        exit()
 
-                 except TimeoutException:
-                     print("Final download button not found or not clickable.")
-                     save_debug_info(driver, f"ep_{current_ep}_kwik_btn_timeout_attempt_{attempt+1}")
-                     if attempt < kwik_download_attempts - 1:
-                          print("Refreshing page and retrying...")
-                          driver.refresh()
-                          time.sleep(3)
-                     else:
-                          print(f"Failed to find/click final download button after {kwik_download_attempts} attempts.")
-                 except ElementClickInterceptedException:
-                      print("Final download button click intercepted. Trying JS click...")
-                      try:
-                           driver.execute_script("arguments[0].click();", final_download_button)
-                           print(f"Download initiated for Episode {current_ep} using JS click (check browser downloads in '{DOWNLOAD_DIR}').")
-                           download_started = True
-                           time.sleep(5)
-                           break
-                      except Exception as js_e:
-                           print(f"JS click also failed: {js_e}")
-                           save_debug_info(driver, f"ep_{current_ep}_kwik_btn_js_fail")
-                 except Exception as e:
-                     print(f"An unexpected error occurred on the final download page: {e}")
-                     save_debug_info(driver, f"ep_{current_ep}_kwik_error")
-                     break
+    try:
+        print(f"Navigating to Animepahe...")
+        driver.get("https://animepahe.si/")
+        time.sleep(2)
+        print(f"Searching for anime: {anime}")
+        try:
+            search_box = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
+                EC.presence_of_element_located((By.NAME, "q"))
+            )
+            search_box.send_keys(anime)
+            time.sleep(0.5) # Allow search results to appear
+            search_box.send_keys(Keys.RETURN)
+            print("Search submitted.")
+        except TimeoutException:
+            print("Error: Could not find the search bar (By.NAME, 'q').")
+            save_debug_info(driver, "search_bar_not_found")
+            driver.quit()
+            exit()
 
-            # Close the download tab and switch back
-            print("Closing download tab...")
-            driver.close()
-            driver.switch_to.window(driver.window_handles[0])
-            time.sleep(1)
-
-            if not download_started:
-                print(f"Warning: Download for episode {current_ep} may not have started. Skipping.")
-                # Decide how to proceed - skipping is simplest here
-
-            # Navigate to the next episode (if not the last one)
-            if current_ep < end_ep:
-                print(f"Navigating to next episode ({current_ep + 1})...")
-                try:
-                    # INSPECT player page for 'Next' button selector
-                    next_episode_button = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
-                        EC.element_to_be_clickable((By.XPATH, "//a[contains(@title, 'Next Episode')]"))
-                    )
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_episode_button)
-                    time.sleep(0.5)
-                    driver.execute_script("arguments[0].click();", next_episode_button)
-                    print("Clicked 'Next Episode' button.")
-                    time.sleep(2) # Wait for next episode's player page to load
-                    current_ep += 1
-                except TimeoutException:
-                    print(f"Error: Could not find or click the 'Next Episode' button after episode {current_ep}.")
-                    save_debug_info(driver, f"ep_{current_ep}_next_button_timeout")
-                    print("Stopping script as next episode navigation failed.")
-                    break
-                except Exception as e:
-                    print(f"An unexpected error occurred clicking 'Next Episode': {e}")
-                    save_debug_info(driver, f"ep_{current_ep}_next_button_error")
-                    break
-            else:
-                print("Reached the target end episode.")
-                break # Exit loop
-
-        except TimeoutException as e:
-            print(f"Timeout Error processing episode {current_ep}: {e}")
-            save_debug_info(driver, f"ep_{current_ep}_timeout_error")
-            print("Attempting to recover or skipping episode.")
-            if current_ep < end_ep:
-                 print(f"Attempting to recover by navigating to episode {current_ep + 1}")
-                 try:
-                    # Try clicking next button again
-                    next_episode_button = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.episodeNext")))
-                    driver.execute_script("arguments[0].click();", next_episode_button)
-                    time.sleep(3)
-                    current_ep += 1
-                 except Exception:
-                    print("Recovery failed. Stopping.")
-                    break
-            else:
-                 break # Already at end episode
-
-        except Exception as e:
-            print(f"An unexpected error occurred while processing episode {current_ep}: {e}")
-            traceback.print_exc() # Print full traceback for unexpected errors
-            save_debug_info(driver, f"ep_{current_ep}_unexpected_error")
-            print("Stopping script due to unexpected error.")
-            break
-
-
-except Exception as e:
-    print(f"\n--- A critical error occurred in the main script execution ---")
-    print(f"Error: {e}")
-    traceback.print_exc() # Print detailed traceback
-    if 'driver' in locals() and driver:
-        save_debug_info(driver, "critical_failure")
-
-finally:
-    if 'driver' in locals() and driver:
-        print("\nScript finished or terminated. Closing browser.")
+        print("Looking for search results...")
+        try:
+            # Wait for the results to load and click the first one
+            first_result_link = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-results li a"))
+            )
+            anime_title = first_result_link.text.strip()
+            print(f"Found first result: {anime_title}. Clicking...")
+            first_result_link.click()
+        except TimeoutException:
+            print(f"Error: Anime '{anime}' not found or search results structure changed.")
+            save_debug_info(driver, "anime_not_found")
+            driver.quit()
+            exit()
+        
+        time.sleep(1.5)
+        anime_link = driver.current_url
+        print(f"Anime page link: {anime_link}")
         driver.quit()
-    else:
-        print("\nScript terminated before driver initialization.")
 
-print(f"Finish Downloading (or script ended). Check the '{DOWNLOAD_DIR}' folder and your browser's download history.")
+   
+        
+        is_all_episodes = end_ep_input.strip() == ''
+        episodes = []
+        if not is_all_episodes:
+            episodes = [start_ep, int(end_ep_input)]
+        else:
+            # For 'all', we still need a start episode for the downloader logic
+            episodes = [start_ep, 0]
+
+
+        animepahe = Animepahe()
+        animepahe.extractor(
+            is_series=True,
+            link=anime_link,
+            target_res=int(pixels),
+            is_all_episodes=is_all_episodes,
+            episodes=episodes,
+            export_filename="links.txt",
+            export_links=False,
+            anime_title=anime_title
+        )
+
+    except Exception as e:
+        print(f"\n--- A critical error occurred ---")
+        print(f"Error: {e}")
+        if 'driver' in locals() and driver:
+            save_debug_info(driver, "critical_failure")
+            driver.quit()
+
+
+if __name__ == "__main__":
+    main()

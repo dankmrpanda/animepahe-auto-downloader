@@ -31,7 +31,7 @@ This project is a Python script that automates downloading anime episodes from A
 
 1.  **Run the script:**
     ```bash
-    python main.py
+    python3 main.py
     ```
 2.  **Follow the on-screen prompts:**
     -   Enter the name of the anime you want to download.

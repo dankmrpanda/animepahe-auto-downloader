@@ -2,3 +2,7 @@ env
 test/
 .vscode
 animepahe cli/
+error_screenshots/
+anime_downloads/
+*.mp4
+links.txt
