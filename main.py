@@ -434,7 +434,8 @@ def main():
             first_result_link = WebDriverWait(driver, DEFAULT_WAIT_TIME).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, ".search-results li a"))
             )
-            anime_title = first_result_link.text.strip()
+            # Extract only the first line (anime title), ignoring metadata lines
+            anime_title = first_result_link.text.strip().split('\n')[0].strip()
             print(f"Found first result: {anime_title}. Clicking...")
             first_result_link.click()
         except TimeoutException:
