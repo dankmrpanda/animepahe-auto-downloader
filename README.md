@@ -1,53 +1,47 @@
-# AnimePahe Auto Downloader
+# AnimePahe Web Downloader
 
-This project is a Python script that automates downloading anime episodes from AnimePahe. It uses Selenium to control a web browser, navigate the website, and download episodes based on user input.
+Full-stack downloader for AnimePahe with a FastAPI backend and a Vite/Vanilla JS frontend. Supports queueing, concurrent downloads with progress, per-episode stop, stop-all, retries, and search with poster fallbacks (MAL/Jikan).
 
 ## Features
-
--   Download a range of episodes for a specific anime.
--   Select the desired download quality.
--   Automatically handles different download providers (Kwik, Uqload).
--   Includes an adblocker to prevent pop-ups and ads.
--   Saves screenshots of errors for debugging.
+- Search AnimePahe with poster fallback via MyAnimeList (Jikan).
+- View details, alt titles, synopsis, and episode list.
+- Select individual episodes or ranges; batch download.
+- Live progress via WebSocket; per-episode stop and Stop All.
+- Retry failed, clear completed, processing placeholder while links are prepared.
 
 ## Prerequisites
+- Python 3.10+
+- Node.js 18+ and npm
 
--   Python 3.x
--   Node.js & NPM
--   Google Chrome browser
+## Setup
+```bash
+git clone https://github.com/your-username/animepahe-auto-downloader.git
+cd animepahe-auto-downloader
+npm install
+```
 
-## Installation
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/your-username/animepahe-auto-downloader.git
-    cd animepahe-auto-downloader
-    ```
-
-2.  **Install dependencies:**
-    ```bash
-    npm install
-    npm run setup
-    ```
-
-## Usage
-
-**Start the application:**
+### Development
+Runs backend (FastAPI) and frontend (Vite) together:
 ```bash
 npm run dev
 ```
-This will start both the backend API and the frontend interface. Open the URL shown in the terminal (usually `http://localhost:5173`).
+Open the URL printed by Vite (usually `http://localhost:5173`).
 
-## Development
-
--   **Backend:** `web/main.py` (FastAPI)
--   **Frontend:** `frontend/` (Vite + Vanilla JS)
-
-To build for production:
+### Production build
 ```bash
 npm run build
 ```
+This builds the frontend to `frontend/dist`; the Python backend serves it when present.
+
+## Project structure
+- `web/` – FastAPI backend (`main.py`, routes, core logic)
+- `frontend/` – Vite/Vanilla JS UI
+- `anime_downloads/` – default download output
+
+## Notes
+- Uses Jikan for poster/synopsis fallback; requests are rate-limited.
+- Stop buttons show on hover in the downloads list.
+- A “Processing downloads” placeholder appears while links are being prepared after starting a download.
 
 ## Disclaimer
-
-This script is for educational purposes only. Please respect the terms of service of the websites you visit. The developers of this script are not responsible for any misuse of this tool.
+For educational purposes only. Please respect the terms of service of the websites you visit. The developers are not responsible for misuse.
