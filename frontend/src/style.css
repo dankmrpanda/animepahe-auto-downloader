@@ -222,7 +222,7 @@ body {
 
 .search-box input {
     width: 100%;
-    padding: 1rem 3rem 1rem 3.5rem;
+    padding: 1rem 6rem 1rem 3.5rem; /* Increased right padding for button, left for icon */
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -240,9 +240,29 @@ body {
     border-color: var(--accent);
 }
 
+.search-btn-inner {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 0.5rem 1rem;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.search-btn-inner:hover {
+    background: #6d28d9;
+}
+
 .search-loader {
     position: absolute;
-    right: 1rem;
+    right: 5rem; /* Moved to left of button */
     top: 50%;
     transform: translateY(-50%);
     width: 18px;
@@ -250,12 +270,14 @@ body {
     border: 2px solid var(--bg-hover);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-    display: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
 }
 
 .search-loader.active {
-    display: block;
+    opacity: 1;
+    animation: spin 0.8s linear infinite;
 }
 
 @keyframes spin {
@@ -777,23 +799,26 @@ body {
 .download-actions {
     display: flex;
     gap: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.download-item:hover .download-actions {
+    opacity: 1;
 }
 
 .download-actions button {
     padding: 0.35rem;
     background: transparent;
     border: none;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
     border-radius: 4px;
+    transition: all 0.2s;
 }
 
 .download-actions button:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.download-actions button.stop:hover {
+    background: rgba(239, 68, 68, 0.15);
     color: var(--error);
 }
 

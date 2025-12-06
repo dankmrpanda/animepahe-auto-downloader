@@ -341,6 +341,28 @@ class DownloadManager:
             self.queue.put_nowait(item)
         
         return found
+
+    async def cancel_all_tasks(self) -> int:
+        """Cancel all pending and active downloads"""
+        count = 0
+        
+        # Cancel active tasks
+        for task_id in list(self.active_tasks.keys()):
+            if await self.cancel_task(task_id):
+                count += 1
+        
+        # Cancel pending tasks
+        while not self.queue.empty():
+            try:
+                item = self.queue.get_nowait()
+                item.status = "stopped"
+                item.error = "Cancelled by user"
+                self.failed_tasks.append(item)
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+                
+        return count
     
     async def retry_failed(self) -> int:
         """Retry all failed downloads"""

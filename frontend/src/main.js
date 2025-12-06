@@ -19,7 +19,8 @@ const state = {
         defaultQuality: 0
     },
     ws: null,
-    wsReconnectAttempts: 0
+    wsReconnectAttempts: 0,
+    processingDownloads: false
 };
 
 // Load settings from localStorage
@@ -117,6 +118,12 @@ const API = {
     async cancelDownload(taskId) {
         const res = await fetch(`${this.baseUrl}/queue/${taskId}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Failed to cancel download');
+        return res.json();
+    },
+
+    async cancelAllDownloads() {
+        const res = await fetch(`${this.baseUrl}/queue`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to cancel all downloads');
         return res.json();
     },
 
@@ -305,31 +312,29 @@ function renderAnimeInfo(anime) {
     const altTitles = [anime.english_title, anime.japanese_title].filter(t => t && t !== anime.title).join(' • ');
 
     container.innerHTML = `
-        <div class="detail-header">
-            <img class="detail-poster" src="${anime.poster || ''}" alt="${escapeHtml(anime.title)}"
-                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 180 260%22%3E%3Crect fill=%22%231a1a25%22 width=%22180%22 height=%22260%22/%3E%3Ctext x=%2290%22 y=%22130%22 text-anchor=%22middle%22 fill=%22%2371717a%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-            <div class="detail-content">
-                <h1 class="anime-title" style="font-size: 2rem; white-space: normal;">${escapeHtml(anime.title)}</h1>
-                ${altTitles ? `<div class="anime-alt-title">${escapeHtml(altTitles)}</div>` : ''}
-                
-                <div class="anime-meta" style="font-size: 1rem; margin-bottom: 15px;">
-                    <span class="meta-tag type">${anime.type || 'TV'}</span> • 
-                    <span class="meta-tag status">${anime.status || 'Unknown'}</span> • 
-                    <span class="meta-tag">${anime.aired || anime.year || ''}</span>
-                    ${genresHtml ? '• ' + genresHtml : ''}
-                </div>
-                
-                <div class="anime-stats">
-                    <div class="stat">
-                        <strong>${anime.total_episodes || 0}</strong> Episodes
-                    </div>
-                    <div class="stat">
-                        <strong>${anime.score || 'N/A'}</strong> MAL Score
-                    </div>
-                </div>
-                
-                ${synopsis}
+        <img class="anime-poster" src="${anime.poster || ''}" alt="${escapeHtml(anime.title)}"
+                onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 180 260%22%3E%3Crect fill=%22%231a1a25%22 width=%22180%22 height=%22260%22/%3E%3Ctext x=%2290%22 y=%22130%22 text-anchor=%22middle%22 fill=%22%2371717a%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+        <div class="anime-details">
+            <h1 class="anime-title" style="font-size: 2rem; white-space: normal;">${escapeHtml(anime.title)}</h1>
+            ${altTitles ? `<div class="anime-alt-title">${escapeHtml(altTitles)}</div>` : ''}
+            
+            <div class="anime-meta" style="font-size: 1rem; margin-bottom: 15px;">
+                <span class="meta-tag type">${anime.type || 'TV'}</span> • 
+                <span class="meta-tag status">${anime.status || 'Unknown'}</span> • 
+                <span class="meta-tag">${anime.aired || anime.year || ''}</span>
+                ${genresHtml ? '• ' + genresHtml : ''}
             </div>
+            
+            <div class="anime-stats">
+                <div class="stat">
+                    <strong>${anime.total_episodes || 0}</strong> Episodes
+                </div>
+                <div class="stat">
+                    <strong>${anime.score || 'N/A'}</strong> MAL Score
+                </div>
+            </div>
+            
+            ${synopsis}
         </div>
     `;
 }
@@ -487,9 +492,29 @@ function renderDownloadList(status) {
         ...(status.failed || []).slice(-10)
     ];
 
+    // If we have items, we are no longer processing
+    if (allItems.length > 0) {
+        state.processingDownloads = false;
+    }
+
     if (allItems.length === 0) {
         container.innerHTML = '';
-        container.appendChild(emptyState.cloneNode(true));
+        
+        if (state.processingDownloads) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon" style="animation: spin 1s linear infinite;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                        </svg>
+                    </div>
+                    <h3>Processing Downloads</h3>
+                    <p>Fetching download links and preparing queue...</p>
+                </div>
+            `;
+        } else {
+            container.appendChild(emptyState.cloneNode(true));
+        }
         return;
     }
 
@@ -758,11 +783,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Search
     const searchInput = document.getElementById('search-input');
-    const debouncedSearch = debounce(async (query) => {
-        if (query.length < 2) {
-            document.getElementById('search-results').classList.remove('active');
-            return;
-        }
+    const searchBtn = document.getElementById('search-btn');
+    
+    const performSearch = async () => {
+        const query = searchInput.value.trim();
+        if (query.length < 2) return;
 
         showSearchLoader(true);
         try {
@@ -775,9 +800,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             showSearchLoader(false);
         }
-    }, 400);
+    };
 
-    searchInput.addEventListener('input', (e) => debouncedSearch(e.target.value.trim()));
+    searchBtn.addEventListener('click', performSearch);
+    
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            performSearch();
+        }
+    });
 
     // Close search results when clicking outside
     document.addEventListener('click', (e) => {
@@ -817,6 +848,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             showToast('info', 'Preparing...', 'Getting download links');
+            state.processingDownloads = true;
 
             const result = await API.startDownload(
                 state.selectedAnime.session,
@@ -825,12 +857,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 quality
             );
 
-            showToast('success', 'Download Started', `${result.added_count} episodes added to queue`);
+            showToast('success', 'Download Started', `${result.message}`);
 
             // Switch to downloads view
             switchView('downloads');
 
         } catch (error) {
+            state.processingDownloads = false;
             showToast('error', 'Error', error.message);
         }
     });
@@ -840,6 +873,17 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const result = await API.retryFailed();
             showToast('info', 'Retrying', `${result.retried_count} downloads queued for retry`);
+            refreshQueueStatus();
+        } catch (error) {
+            showToast('error', 'Error', error.message);
+        }
+    });
+
+    document.getElementById('stop-all-btn').addEventListener('click', async () => {
+        if (!confirm('Are you sure you want to stop all downloads?')) return;
+        try {
+            const result = await API.cancelAllDownloads();
+            showToast('info', 'Stopped', `${result.cancelled_count} downloads stopped`);
             refreshQueueStatus();
         } catch (error) {
             showToast('error', 'Error', error.message);

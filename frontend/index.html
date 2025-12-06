@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
     <div class="app">
@@ -69,6 +69,7 @@
                             </svg>
                             <input type="text" id="search-input" placeholder="Search anime..." autocomplete="off">
                             <div class="search-loader" id="search-loader"></div>
+                            <button id="search-btn" class="search-btn-inner">Enter</button>
                         </div>
                         
                         <div class="search-results" id="search-results"></div>
@@ -162,6 +163,12 @@
                                     <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
                                 </svg>
                                 Retry Failed
+                            </button>
+                            <button class="btn btn-outline" id="stop-all-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                                </svg>
+                                Stop All
                             </button>
                             <button class="btn btn-outline" id="clear-completed-btn">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -331,6 +338,6 @@
         <div class="toast-container" id="toast-container"></div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script type="module" src="/src/main.js"></script>
 </body>
 </html>

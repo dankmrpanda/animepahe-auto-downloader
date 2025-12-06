@@ -1,0 +1,14 @@
+{
+  "name": "animepahe-downloader",
+  "version": "1.0.0",
+  "description": "AnimePahe Auto Downloader",
+  "scripts": {
+    "setup": "pip install -r requirements.txt -r web/requirements.txt && cd frontend && npm install",
+    "dev": "concurrently \"python web/main.py\" \"cd frontend && npm run dev\" --names \"API,UI\" --prefix-colors \"blue,green\" --kill-others",
+    "build": "cd frontend && npm run build",
+    "start": "npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

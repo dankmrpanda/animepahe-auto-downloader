@@ -13,6 +13,7 @@ This project is a Python script that automates downloading anime episodes from A
 ## Prerequisites
 
 -   Python 3.x
+-   Node.js & NPM
 -   Google Chrome browser
 
 ## Installation
@@ -22,23 +23,30 @@ This project is a Python script that automates downloading anime episodes from A
     git clone https://github.com/your-username/animepahe-auto-downloader.git
     cd animepahe-auto-downloader
     ```
-2.  **Install the required Python packages:**
+
+2.  **Install dependencies:**
     ```bash
-    pip install -r requirements.txt
+    npm install
+    npm run setup
     ```
 
 ## Usage
 
-1.  **Run the script:**
-    ```bash
-    python3 main.py
-    ```
-2.  **Follow the on-screen prompts:**
-    -   Enter the name of the anime you want to download.
-    -   Enter the starting and ending episode numbers.
-    -   Choose the download quality (e.g., 720p, 1080p).
+**Start the application:**
+```bash
+npm run dev
+```
+This will start both the backend API and the frontend interface. Open the URL shown in the terminal (usually `http://localhost:5173`).
 
-The script will then open a Chrome browser window and start downloading the episodes. The downloaded files will be saved in the `anime_downloads` directory.
+## Development
+
+-   **Backend:** `web/main.py` (FastAPI)
+-   **Frontend:** `frontend/` (Vite + Vanilla JS)
+
+To build for production:
+```bash
+npm run build
+```
 
 ## Disclaimer
 

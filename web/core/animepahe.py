@@ -180,38 +180,36 @@ class AnimePaheClient:
                     if poster and not poster.startswith("http"):
                         poster = f"{self.BASE_URL}{poster}" if poster.startswith("/") else poster
                     
-                    # If poster is missing or looks invalid (e.g. just base url), try MAL
-                    # Note: We don't want to spam MAL for every result if we can avoid it
-                    # But if the user says images are broken, we might need to.
-                    # For now, let's only fetch if poster is empty or None
-                    if not poster:
-                        # We can't await here easily without slowing down the loop
-                        # But since we need the image, we might have to.
-                        # Let's mark it for background fetch or just fetch it.
-                        pass 
-
-                    results.append(AnimeSearchResult(
+                    result = AnimeSearchResult(
                         session=item.get("session", ""),
                         title=item.get("title", "Unknown"),
                         type=item.get("type", "TV"),
-                        episodes=item.get("episodes", 0),
+                        episodes=item.get("episodes") or 0,
                         status=item.get("status", "Unknown"),
                         season=item.get("season", "Unknown"),
-                        year=item.get("year", 0),
-                        score=float(item.get("score", 0.0) or 0.0),
-                        poster=poster,
-                    ))
+                        year=item.get("year") or 0,
+                        score=float(item.get("score") or 0.0),
+                        poster=poster
+                    )
+                    results.append(result)
                 
-                # If we have results but no posters, try to fetch from MAL in parallel
-                # Only do this for the top 3 results to avoid rate limits
-                tasks = []
-                for i, res in enumerate(results[:5]):
-                    if not res.poster or "animepahe" in res.poster: # Assuming animepahe posters might be broken
-                        tasks.append(self._update_poster_from_mal(res))
-                
-                if tasks:
-                    await asyncio.gather(*tasks)
-                
+                # Fetch MAL posters for all results to ensure high quality images
+                # We stagger requests to avoid Jikan rate limits (3 req/sec)
+                if results:
+                    async def fetch_with_delay(res, delay):
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        try:
+                            new_poster = await self._get_mal_poster(res.title)
+                            if new_poster:
+                                res.poster = new_poster
+                        except Exception:
+                            pass
+
+                    # Limit to top 8 results to avoid excessive requests
+                    tasks = [fetch_with_delay(r, i * 0.4) for i, r in enumerate(results[:8])]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
                 return results
             except Exception as e:
                 print(f"Search error: {e}")
@@ -247,14 +245,22 @@ class AnimePaheClient:
                 raise AnimePaheError(f"Failed to get anime details: {response.status_code}")
             
             # Extract title from page to use for MAL search
-            title_match = re.search(r'<h1[^>]*>(.*?)</h1>', response.text, re.DOTALL)
-            if title_match:
-                # Remove any HTML tags from the title
-                title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
-                # Decode HTML entities
-                title = html.unescape(title)
+            # Try to get clean title from og:title first
+            og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', response.text)
+            if og_title_match:
+                title = og_title_match.group(1).strip()
+                # Remove " | AnimePahe" suffix if present
+                title = title.split(" | ")[0]
             else:
-                title = ""
+                # Fallback to h1 extraction
+                title_match = re.search(r'<h1[^>]*>(.*?)</h1>', response.text, re.DOTALL)
+                if title_match:
+                    # Remove any HTML tags from the title
+                    title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+                    # Decode HTML entities
+                    title = html.unescape(title)
+                else:
+                    title = ""
 
             # Extract poster from og:image as fallback
             poster_match = re.search(r'<meta property="og:image" content="([^"]+)"', response.text)

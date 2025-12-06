@@ -418,6 +418,20 @@ async def cancel_download(task_id: str):
     return {"success": success}
 
 
+@router.delete("/queue")
+async def cancel_all_downloads():
+    """
+    Cancel all pending and active downloads.
+    """
+    if not download_manager:
+        raise HTTPException(status_code=500, detail="Download manager not initialized")
+    
+    count = await download_manager.cancel_all_tasks()
+    await broadcast_status()
+    
+    return {"cancelled_count": count}
+
+
 # ============= Settings Routes =============
 
 @router.get("/settings", response_model=AppSettings)

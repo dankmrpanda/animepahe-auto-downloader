@@ -64,15 +64,15 @@ async def lifespan(app: FastAPI):
     # Start download workers
     await download_manager.start()
     
-    print(f"🚀 AnimePahe Web Downloader started!")
-    print(f"📁 Default download path: {default_path}")
-    print(f"🌐 Open http://localhost:8000 in your browser")
+    print(f"AnimePahe Web Downloader started!")
+    print(f"Default download path: {default_path}")
+    print(f"Open http://localhost:8000 in your browser")
     
     yield
     
     # Shutdown
     await download_manager.stop()
-    print("👋 Shutting down...")
+    print("Shutting down...")
 
 
 # Create FastAPI app
@@ -95,19 +95,21 @@ app.add_middleware(
 # Include API routes
 app.include_router(api_router)
 
-# Serve static files
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+# Serve static files (Production build)
+# Go up one level from web/ to root, then into frontend/dist
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 
-
-@app.get("/")
-async def root():
-    """Serve the main HTML page"""
-    index_path = static_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    return {"message": "AnimePahe Web Downloader API", "docs": "/docs"}
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+else:
+    # Fallback for development or if build is missing
+    @app.get("/")
+    async def root():
+        return {
+            "message": "AnimePahe Web Downloader API", 
+            "status": "running",
+            "frontend": "Run 'npm run dev' in frontend directory for development, or 'npm run build' for production."
+        }
 
 
 @app.get("/health")
