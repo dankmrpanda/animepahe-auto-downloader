@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AnimePahe Web Downloader - Download your favorite anime with ease">
+    <title>AnimePahe Web Downloader</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                            <path d="M2 17l10 5 10-5"/>
+                            <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <span class="logo-text">AnimePahe<span class="logo-accent">DL</span></span>
+                </div>
+                <nav class="nav">
+                    <button class="nav-btn active" data-view="search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="M21 21l-4.35-4.35"/>
+                        </svg>
+                        Search
+                    </button>
+                    <button class="nav-btn" data-view="downloads">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Downloads
+                        <span class="badge" id="download-badge" style="display: none;">0</span>
+                    </button>
+                    <button class="nav-btn" data-view="settings">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                        Settings
+                    </button>
+                </nav>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Search View -->
+            <section class="view active" id="search-view">
+                <div class="search-section">
+                    <h1 class="page-title">Find Your Anime</h1>
+                    <p class="page-subtitle">Search for any anime and download episodes in your preferred quality</p>
+                    
+                    <div class="search-container">
+                        <div class="search-box">
+                            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="M21 21l-4.35-4.35"/>
+                            </svg>
+                            <input type="text" id="search-input" placeholder="Search anime..." autocomplete="off">
+                            <div class="search-loader" id="search-loader"></div>
+                        </div>
+                        
+                        <div class="search-results" id="search-results"></div>
+                    </div>
+                </div>
+
+                <!-- Anime Detail Panel -->
+                <div class="anime-panel" id="anime-panel">
+                    <div class="panel-header">
+                        <button class="back-btn" id="back-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 12H5"/>
+                                <polyline points="12,19 5,12 12,5"/>
+                            </svg>
+                            Back to Search
+                        </button>
+                    </div>
+                    
+                    <div class="anime-info" id="anime-info">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                    
+                    <div class="episodes-section">
+                        <div class="episodes-header">
+                            <h2>Episodes</h2>
+                            <div class="episode-controls">
+                                <div class="control-group">
+                                    <label>Quality:</label>
+                                    <select id="quality-select">
+                                        <option value="0">Highest Available</option>
+                                        <option value="1080">1080p</option>
+                                        <option value="720">720p</option>
+                                        <option value="480">480p</option>
+                                        <option value="360">360p</option>
+                                        <option value="-1">Lowest Available</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <button class="btn btn-outline" id="select-all-btn">Select All</button>
+                                    <button class="btn btn-outline" id="select-range-btn">Select Range</button>
+                                    <button class="btn btn-outline" id="deselect-all-btn">Deselect All</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="range-picker" id="range-picker" style="display: none;">
+                            <div class="range-inputs">
+                                <div class="input-group">
+                                    <label>From Episode:</label>
+                                    <input type="number" id="range-start" min="1" value="1">
+                                </div>
+                                <div class="input-group">
+                                    <label>To Episode:</label>
+                                    <input type="number" id="range-end" min="1" value="12">
+                                </div>
+                                <button class="btn btn-primary" id="apply-range-btn">Apply Range</button>
+                                <button class="btn btn-outline" id="cancel-range-btn">Cancel</button>
+                            </div>
+                        </div>
+                        
+                        <div class="episodes-grid" id="episodes-grid">
+                            <!-- Populated by JavaScript -->
+                        </div>
+                        
+                        <div class="episodes-footer">
+                            <div class="selection-info">
+                                <span id="selected-count">0</span> episodes selected
+                            </div>
+                            <button class="btn btn-primary btn-large" id="download-btn" disabled>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7,10 12,15 17,10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Download Selected
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Downloads View -->
+            <section class="view" id="downloads-view">
+                <div class="downloads-section">
+                    <div class="downloads-header">
+                        <h1 class="page-title">Downloads</h1>
+                        <div class="downloads-actions">
+                            <button class="btn btn-outline" id="retry-failed-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="1,4 1,10 7,10"/>
+                                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                                </svg>
+                                Retry Failed
+                            </button>
+                            <button class="btn btn-outline" id="clear-completed-btn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3,6 5,6 21,6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                </svg>
+                                Clear Completed
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="downloads-stats" id="downloads-stats">
+                        <div class="stat-card">
+                            <div class="stat-icon active">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <polyline points="12 6 12 12 16 14"/>
+                                </svg>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-value" id="active-count">0</span>
+                                <span class="stat-label">Active</span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon pending">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                                    <path d="M3 9h18"/>
+                                </svg>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-value" id="pending-count">0</span>
+                                <span class="stat-label">Pending</span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon completed">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                                    <polyline points="22 4 12 14.01 9 11.01"/>
+                                </svg>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-value" id="completed-count">0</span>
+                                <span class="stat-label">Completed</span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon failed">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <line x1="15" y1="9" x2="9" y2="15"/>
+                                    <line x1="9" y1="9" x2="15" y2="15"/>
+                                </svg>
+                            </div>
+                            <div class="stat-info">
+                                <span class="stat-value" id="failed-count">0</span>
+                                <span class="stat-label">Failed</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="downloads-list" id="downloads-list">
+                        <div class="empty-state" id="downloads-empty">
+                            <div class="empty-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7,10 12,15 17,10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                            </div>
+                            <h3>No Downloads</h3>
+                            <p>Search for an anime and add episodes to start downloading</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section class="view" id="settings-view">
+                <div class="settings-section">
+                    <h1 class="page-title">Settings</h1>
+                    <p class="page-subtitle">Configure your download preferences</p>
+                    
+                    <div class="settings-grid">
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                                </svg>
+                                <h3>Download Location</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <p>Choose where your anime episodes will be saved</p>
+                                <div class="input-with-btn">
+                                    <input type="text" id="download-path" placeholder="Enter download path...">
+                                    <button class="btn btn-outline" id="browse-path-btn">Browse</button>
+                                </div>
+                                <p class="hint">Default: Your Downloads folder</p>
+                            </div>
+                        </div>
+                        
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M12 2v4"/>
+                                    <path d="M12 18v4"/>
+                                    <path d="M4.93 4.93l2.83 2.83"/>
+                                    <path d="M16.24 16.24l2.83 2.83"/>
+                                    <path d="M2 12h4"/>
+                                    <path d="M18 12h4"/>
+                                    <path d="M4.93 19.07l2.83-2.83"/>
+                                    <path d="M16.24 7.76l2.83-2.83"/>
+                                </svg>
+                                <h3>Concurrent Downloads</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <p>Number of simultaneous downloads</p>
+                                <div class="slider-container">
+                                    <input type="range" id="max-workers" min="1" max="8" value="4">
+                                    <div class="slider-value">
+                                        <span id="workers-value">4</span> downloads
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="2" y="3" width="20" height="14" rx="2"/>
+                                    <path d="M8 21h8"/>
+                                    <path d="M12 17v4"/>
+                                </svg>
+                                <h3>Default Quality</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <p>Preferred video quality for downloads</p>
+                                <select id="default-quality">
+                                    <option value="0">Highest Available</option>
+                                    <option value="1080">1080p</option>
+                                    <option value="720" selected>720p</option>
+                                    <option value="480">480p</option>
+                                    <option value="360">360p</option>
+                                    <option value="-1">Lowest Available</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-actions">
+                        <button class="btn btn-primary" id="save-settings-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                <polyline points="17,21 17,13 7,13 7,21"/>
+                                <polyline points="7,3 7,8 15,8"/>
+                            </svg>
+                            Save Settings
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Toast Container -->
+        <div class="toast-container" id="toast-container"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

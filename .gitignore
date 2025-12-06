@@ -1,3 +1,93 @@
+# -------------------------------
+# Project .gitignore - animepahe-auto-downloader
+# This file keeps sensitive / environment files and local artifacts
+# from being accidentally committed
+# -------------------------------
+
+# Python virtual environments
+env/
+venv/
+.venv/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Installer / pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit testing / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+coverage.xml
+
+# Local settings / environment files
+.env
+.env.*
+env.json
+
+# Editor & OS files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Logs
+*.log
+
+# Database files
+*.sqlite3
+*.db
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Media / downloads / user artifacts (local environment specific)
+anime_downloads/
+error_screenshots/
+*.mp4
+
+# Project specific local files
+links.txt
+animepahe cli/
+test/
+
+# JetBrains
+*.iml
+*.iws
+out/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Bytecode / caches
+*.pyc
+
+# Misc
+coverage/
+_build/
+venv/
+/.vscode/
 env
 test/
 .vscode
