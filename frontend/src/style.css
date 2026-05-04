@@ -32,6 +32,18 @@
     padding: 0;
 }
 
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 html {
     font-size: 15px;
 }
@@ -42,6 +54,8 @@ body {
     color: var(--text-primary);
     line-height: 1.5;
     min-height: 100vh;
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) var(--bg-secondary);
 }
 
 ::-webkit-scrollbar {
@@ -78,6 +92,30 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
+}
+
+/* Connection Status Indicator */
+.ws-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--error);
+    flex-shrink: 0;
+    transition: background 0.3s;
+}
+
+.ws-status.connected {
+    background: var(--success);
+}
+
+.ws-status.reconnecting {
+    background: var(--warning);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 
 .logo {
@@ -124,7 +162,7 @@ body {
     color: var(--text-secondary);
     font-size: 0.85rem;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: color 0.15s, background 0.15s;
 }
 
 .nav-btn svg {
@@ -318,7 +356,8 @@ body {
     border-bottom: none;
 }
 
-.search-result-item:hover {
+.search-result-item:hover,
+.search-result-item.highlighted {
     background: var(--bg-hover);
 }
 
@@ -432,6 +471,8 @@ body {
     max-height: 150px;
     overflow-y: auto;
     padding-right: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) transparent;
 }
 
 .anime-synopsis::-webkit-scrollbar {
@@ -575,8 +616,10 @@ body {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    color: var(--text-primary);
+    font: inherit;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
 
 .episode-card:hover {
@@ -625,12 +668,44 @@ body {
 }
 
 .downloads-header {
+    margin-bottom: 1.25rem;
+}
+
+.downloads-header-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.75rem;
-    margin-bottom: 1.25rem;
+}
+
+.total-progress-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.total-progress-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-secondary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.total-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+.total-progress-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    min-width: 40px;
+    text-align: right;
 }
 
 .downloads-actions {
@@ -768,6 +843,11 @@ body {
     font-size: 0.75rem;
     color: var(--text-muted);
     margin-top: 0.15rem;
+    flex-wrap: wrap;
+}
+
+.failure-reason {
+    color: #fca5a5;
 }
 
 .download-progress {
@@ -789,6 +869,16 @@ body {
     transition: width 0.2s;
 }
 
+.progress-fill.indeterminate {
+    width: 30% !important;
+    animation: indeterminate 1.5s ease-in-out infinite;
+}
+
+@keyframes indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
 .progress-text {
     font-size: 0.7rem;
     color: var(--text-muted);
@@ -807,6 +897,12 @@ body {
     opacity: 1;
 }
 
+@media (hover: none) {
+    .download-actions {
+        opacity: 1;
+    }
+}
+
 .download-actions button {
     padding: 0.35rem;
     background: transparent;
@@ -814,12 +910,28 @@ body {
     color: var(--text-secondary);
     cursor: pointer;
     border-radius: 4px;
-    transition: all 0.2s;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    min-height: 32px;
+    min-width: 32px;
 }
 
 .download-actions button:hover {
     background: rgba(239, 68, 68, 0.15);
     color: var(--error);
+}
+
+.download-actions button.retry,
+.download-actions button.recover {
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.55rem;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+}
+
+.download-actions button.retry:hover,
+.download-actions button.recover:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
 }
 
 .empty-state {
@@ -932,6 +1044,7 @@ body {
     background: var(--bg-secondary);
     border-radius: 2px;
     -webkit-appearance: none;
+    appearance: none;
 }
 
 .slider-container input[type="range"]::-webkit-slider-thumb {
@@ -940,6 +1053,22 @@ body {
     height: 16px;
     background: var(--accent);
     border-radius: 50%;
+    cursor: pointer;
+}
+
+.slider-container input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: var(--bg-secondary);
+    border-radius: 2px;
+    border: none;
+}
+
+.slider-container input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--accent);
+    border-radius: 50%;
+    border: none;
     cursor: pointer;
 }
 
@@ -960,6 +1089,56 @@ body {
     justify-content: flex-end;
 }
 
+.diag-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem;
+}
+
+.diag-metrics div {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.diag-metrics strong {
+    font-size: 1rem;
+}
+
+.diag-metrics span {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.diag-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.diag-list li {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.65rem;
+    background: var(--bg-secondary);
+    font-size: 0.82rem;
+}
+
+.diag-list li.ok {
+    border-color: rgba(34, 197, 94, 0.35);
+}
+
+.diag-list li.fail {
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
 /* Form Elements */
 input[type="text"],
 input[type="number"],
@@ -976,6 +1155,14 @@ input:focus,
 select:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.episode-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 select {
@@ -998,7 +1185,8 @@ select {
     font-size: 0.85rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s, filter 0.15s;
+    min-height: 36px;
 }
 
 .btn svg {
@@ -1157,8 +1345,72 @@ select {
         grid-template-columns: repeat(2, 1fr);
     }
 
+    .diag-metrics {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
     .download-progress {
         width: 100%;
         order: 10;
     }
+
+    .search-results {
+        position: fixed;
+        left: 1rem;
+        right: 1rem;
+        top: auto;
+        max-height: 50vh;
+    }
+}
+
+/* Search History */
+.search-history-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.search-history-item:last-child {
+    border-bottom: none;
+}
+
+.search-history-item:hover,
+.search-history-item.highlighted {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.search-history-item svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.search-history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.search-history-header button {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+
+.search-history-header button:hover {
+    color: var(--text-primary);
 }

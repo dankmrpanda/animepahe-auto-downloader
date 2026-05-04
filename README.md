@@ -18,6 +18,7 @@ Full-stack downloader for AnimePahe with a FastAPI backend and a Vite/Vanilla JS
 git clone https://github.com/your-username/animepahe-auto-downloader.git
 cd animepahe-auto-downloader
 npm install
+npm run setup
 ```
 
 ### Development
@@ -33,6 +34,25 @@ npm run build
 ```
 This builds the frontend to `frontend/dist`; the Python backend serves it when present.
 
+### Localhost Startup (With Checks)
+Run explicit dependency/version/start checks before launching:
+```bash
+npm run check:start
+npm run start:localhost
+```
+
+Windows users can also run:
+```bat
+run_web.bat
+```
+
+## Localhost Diagnostics and Maintenance
+- `GET /health` - local health status, queue summary, metrics, startup checks.
+- `GET /api/diagnostics` - recent failures + environment checks.
+- `GET /api/backup/export` - export settings + queue/history backup.
+- `POST /api/backup/import` - import settings + queue/history backup payload.
+- `POST /api/maintenance/cleanup` - remove stale partial/lock files and orphan queue entries.
+
 ## Project structure
 - `web/` – FastAPI backend (`main.py`, routes, core logic)
 - `frontend/` – Vite/Vanilla JS UI
@@ -42,6 +62,10 @@ This builds the frontend to `frontend/dist`; the Python backend serves it when p
 - Uses Jikan for poster/synopsis fallback; requests are rate-limited.
 - Stop buttons show on hover in the downloads list.
 - A “Processing downloads” placeholder appears while links are being prepared after starting a download.
+- Download flow parity note: `docs/download-flow-main-parity.md`.
+- Localhost production hardening checklist: `TODO.localhost.md`.
 
 ## Disclaimer
 For educational purposes only. Please respect the terms of service of the websites you visit. The developers are not responsible for misuse.
+
+

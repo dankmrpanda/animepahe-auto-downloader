@@ -230,7 +230,7 @@ class Animepahe:
             raise ValueError("Invalid anime link format")
         anime_id = anime_id_match.group(1)
 
-        api_url = f"https://animepahe.si/api?m=release&id={anime_id}&sort=episode_asc&page=1"
+        api_url = f"https://animepahe.org/api?m=release&id={anime_id}&sort=episode_asc&page=1"
         response = self.session.get(api_url, headers=self.get_headers(link))
         if response.status_code != 200:
             raise RuntimeError(f"Failed to fetch episode count from {api_url}, status code: {response.status_code}")
@@ -251,7 +251,7 @@ class Animepahe:
             end_page = (episodes[1] + 29) // 30
 
         for page in range(start_page, end_page + 1):
-            api_url = f"https://animepahe.si/api?m=release&id={anime_id}&sort=episode_asc&page={page}"
+            api_url = f"https://animepahe.org/api?m=release&id={anime_id}&sort=episode_asc&page={page}"
             response = self.session.get(api_url, headers=self.get_headers(link))
             if response.status_code != 200:
                 raise RuntimeError(f"Failed to fetch series data from {api_url}, status code: {response.status_code}")
@@ -259,7 +259,7 @@ class Animepahe:
             for episode in response.json().get("data", []):
                 session = episode.get("session")
                 if session:
-                    links.append(f"https://animepahe.si/play/{anime_id}/{session}")
+                    links.append(f"https://animepahe.org/play/{anime_id}/{session}")
         return links
 
     def extract_link_content(self, link, episodes, target_res, is_series, is_all_episodes):
@@ -411,7 +411,7 @@ def main():
 
     try:
         print(f"Navigating to Animepahe...")
-        driver.get("https://animepahe.si/")
+        driver.get("https://animepahe.org/")
         time.sleep(2)
         print(f"Searching for anime: {anime}")
         try:

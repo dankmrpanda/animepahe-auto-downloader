@@ -111,6 +111,8 @@ class DownloadProgress(BaseModel):
     id: str
     filename: str
     anime_title: str
+    anime_session: Optional[str] = None
+    episode_session: Optional[str] = None
     episode: float
     resolution: int
     status: str
@@ -119,6 +121,10 @@ class DownloadProgress(BaseModel):
     total_bytes: int
     speed: float
     error: Optional[str] = None
+    failure_reason: Optional[str] = None
+    failure_detail: Optional[str] = None
+    retry_count: int = 0
+    terminal: bool = False
 
 
 class DownloadQueueStatus(BaseModel):

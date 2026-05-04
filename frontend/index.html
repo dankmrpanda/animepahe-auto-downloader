@@ -25,6 +25,7 @@
                     </div>
                     <span class="logo-text">AnimePahe<span class="logo-accent">DL</span></span>
                 </div>
+                <div class="ws-status" id="ws-status" title="Disconnected" role="status" aria-live="polite" aria-label="WebSocket disconnected"></div>
                 <nav class="nav">
                     <button class="nav-btn active" data-view="search">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -49,6 +50,13 @@
                         </svg>
                         Settings
                     </button>
+                    <button class="nav-btn" data-view="diagnostics">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 3v18h18"/>
+                            <path d="M7 14l3-3 3 2 4-5"/>
+                        </svg>
+                        Diagnostics
+                    </button>
                 </nav>
             </div>
         </header>
@@ -63,6 +71,7 @@
                     
                     <div class="search-container">
                         <div class="search-box">
+                            <label class="sr-only" for="search-input">Search anime</label>
                             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <circle cx="11" cy="11" r="8"/>
                                 <path d="M21 21l-4.35-4.35"/>
@@ -72,7 +81,7 @@
                             <button id="search-btn" class="search-btn-inner">Enter</button>
                         </div>
                         
-                        <div class="search-results" id="search-results"></div>
+                        <div class="search-results" id="search-results" role="listbox" aria-label="Search results"></div>
                     </div>
                 </div>
 
@@ -97,7 +106,7 @@
                             <h2>Episodes</h2>
                             <div class="episode-controls">
                                 <div class="control-group">
-                                    <label>Quality:</label>
+                                    <label for="quality-select">Quality:</label>
                                     <select id="quality-select">
                                         <option value="0">Highest Available</option>
                                         <option value="1080">1080p</option>
@@ -118,11 +127,11 @@
                         <div class="range-picker" id="range-picker" style="display: none;">
                             <div class="range-inputs">
                                 <div class="input-group">
-                                    <label>From Episode:</label>
+                                    <label for="range-start">From Episode:</label>
                                     <input type="number" id="range-start" min="1" value="1">
                                 </div>
                                 <div class="input-group">
-                                    <label>To Episode:</label>
+                                    <label for="range-end">To Episode:</label>
                                     <input type="number" id="range-end" min="1" value="12">
                                 </div>
                                 <button class="btn btn-primary" id="apply-range-btn">Apply Range</button>
@@ -155,9 +164,17 @@
             <section class="view" id="downloads-view">
                 <div class="downloads-section">
                     <div class="downloads-header">
-                        <h1 class="page-title">Downloads</h1>
-                        <div class="downloads-actions">
-                            <button class="btn btn-outline" id="retry-failed-btn">
+                        <div class="downloads-header-top">
+                            <h1 class="page-title">Downloads</h1>
+                            <div class="downloads-actions">
+                                <button class="btn btn-outline" id="pause-resume-btn" title="Pause/Resume queue">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <rect x="6" y="4" width="4" height="16"/>
+                                        <rect x="14" y="4" width="4" height="16"/>
+                                    </svg>
+                                    Pause
+                                </button>
+                                <button class="btn btn-outline" id="retry-failed-btn">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polyline points="1,4 1,10 7,10"/>
                                     <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
@@ -177,6 +194,13 @@
                                 </svg>
                                 Clear Completed
                             </button>
+                            </div>
+                        </div>
+                        <div class="total-progress-container" id="total-progress-container" style="display: none;">
+                            <div class="total-progress-bar">
+                                <div class="total-progress-fill" id="total-progress-fill"></div>
+                            </div>
+                            <span class="total-progress-text" id="total-progress-text">0%</span>
                         </div>
                     </div>
                     
@@ -232,7 +256,7 @@
                         </div>
                     </div>
                     
-                    <div class="downloads-list" id="downloads-list">
+                    <div class="downloads-list" id="downloads-list" aria-live="polite" aria-label="Download queue list">
                         <div class="empty-state" id="downloads-empty">
                             <div class="empty-icon">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -264,11 +288,16 @@
                             </div>
                             <div class="settings-card-body">
                                 <p>Choose where your anime episodes will be saved</p>
-                                <div class="input-with-btn">
-                                    <input type="text" id="download-path" placeholder="Enter download path...">
-                                    <button class="btn btn-outline" id="browse-path-btn">Browse</button>
-                                </div>
-                                <p class="hint">Default: Your Downloads folder</p>
+                                <input type="text" id="download-path" placeholder="Enter download path..." style="width: 100%;">
+                                <p class="hint">Enter the full absolute path (e.g. C:\Users\You\Downloads)</p>
+                                <button class="btn btn-outline" id="open-folder-btn" style="margin-top: 0.5rem;">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                                        <polyline points="15,3 21,3 21,9"/>
+                                        <line x1="10" y1="14" x2="21" y2="3"/>
+                                    </svg>
+                                    Open Folder
+                                </button>
                             </div>
                         </div>
                         
@@ -332,10 +361,74 @@
                     </div>
                 </div>
             </section>
+
+            <!-- Diagnostics View -->
+            <section class="view" id="diagnostics-view">
+                <div class="settings-section">
+                    <div class="downloads-header-top" style="margin-bottom: 1rem;">
+                        <div>
+                            <h1 class="page-title">Diagnostics</h1>
+                            <p class="page-subtitle">Health, metrics, recent errors, and environment checks</p>
+                        </div>
+                        <div class="downloads-actions">
+                            <input type="file" id="import-backup-input" class="sr-only" accept="application/json">
+                            <button class="btn btn-outline" id="export-backup-btn">Export Backup</button>
+                            <button class="btn btn-outline" id="import-backup-btn">Import Backup</button>
+                            <button class="btn btn-outline" id="run-cleanup-btn">Run Cleanup</button>
+                            <button class="btn btn-outline" id="refresh-diagnostics-btn">Refresh</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-grid">
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <h3>Health</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <p>Status: <strong id="diag-health-status">Unknown</strong></p>
+                                <p class="hint">Last updated: <span id="diag-health-updated">-</span></p>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <h3>Metrics</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <div class="diag-metrics">
+                                    <div><strong id="metric-started">0</strong><span>Started</span></div>
+                                    <div><strong id="metric-completed">0</strong><span>Completed</span></div>
+                                    <div><strong id="metric-failed">0</strong><span>Failed</span></div>
+                                    <div><strong id="metric-retried">0</strong><span>Retried</span></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <h3>Environment Checks</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <ul class="diag-list" id="diag-environment-checks"></ul>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <div class="settings-card-header">
+                                <h3>Recent Errors</h3>
+                            </div>
+                            <div class="settings-card-body">
+                                <ul class="diag-list" id="diag-recent-errors"></ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
 
         <!-- Toast Container -->
         <div class="toast-container" id="toast-container"></div>
+        <div id="status-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

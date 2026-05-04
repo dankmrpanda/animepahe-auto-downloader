@@ -7,6 +7,7 @@ import re
 import httpx
 from typing import Optional
 import asyncio
+from urllib.parse import urljoin, urlparse
 
 
 class KwikDecodeError(Exception):
@@ -80,6 +81,25 @@ class KwikPahe:
             i += 1
         
         return decoded
+
+    def _normalize_kwik_url(self, url: str, base_url: str = "") -> str:
+        """Normalize kwik links to absolute HTTPS URLs and force /f/ endpoint."""
+        normalized = (url or "").strip()
+        if not normalized:
+            return normalized
+
+        if normalized.startswith("/"):
+            normalized = urljoin(base_url, normalized)
+        elif normalized.startswith("//"):
+            normalized = "https:" + normalized
+
+        parsed = urlparse(normalized)
+        if parsed.scheme == "http":
+            normalized = normalized.replace("http://", "https://", 1)
+
+        if "/d/" in normalized:
+            normalized = normalized.replace("/d/", "/f/")
+        return normalized
     
     async def _fetch_with_retry(
         self, 
@@ -90,20 +110,22 @@ class KwikPahe:
         **kwargs
     ) -> httpx.Response:
         """Fetch URL with exponential backoff retry"""
-        last_error = None
+        last_error: str | None = None
         
         for attempt in range(retries):
             try:
                 if method == "GET":
+                    kwargs.setdefault("follow_redirects", True)
                     response = await client.get(url, **kwargs)
                 else:
                     response = await client.post(url, **kwargs)
                 
-                if response.status_code == 200 or response.status_code == 302:
+                if 200 <= response.status_code < 400:
                     return response
-                    
+
+                last_error = f"HTTP {response.status_code}"
             except Exception as e:
-                last_error = e
+                last_error = str(e)
             
             # Exponential backoff
             if attempt < retries - 1:
@@ -143,10 +165,10 @@ class KwikPahe:
             follow_redirects=False
         )
         
-        if response.status_code == 302:
+        if response.status_code in {301, 302, 303, 307, 308}:
             location = response.headers.get("location")
             if location:
-                return location
+                return self._normalize_kwik_url(location, base_url=kwik_link)
         
         raise KwikDecodeError(f"No redirect found from Kwik POST (status: {response.status_code})")
     
@@ -212,7 +234,12 @@ class KwikPahe:
             token = token_match.group(1)
             
             # Get the direct link
-            return await self.fetch_direct_link(client, form_action, token, session_cookie)
+            direct_link = await self.fetch_direct_link(client, form_action, token, session_cookie)
+            parsed = urlparse(direct_link)
+            if retries > 1 and parsed.netloc.startswith("kwik.") and parsed.path.startswith("/f/"):
+                # Some responses return an intermediate kwik URL; resolve once more.
+                return await self.decode_kwik_page(client, direct_link, retries - 1)
+            return direct_link
             
         except KwikDecodeError:
             raise
@@ -237,6 +264,11 @@ class KwikPahe:
         Returns:
             Direct download URL to the video file
         """
+        if pahe_embed_url.startswith("http://pahe.win/"):
+            pahe_embed_url = "https://" + pahe_embed_url[len("http://") :]
+        elif pahe_embed_url.startswith("//pahe.win/"):
+            pahe_embed_url = "https:" + pahe_embed_url
+
         response = await self._fetch_with_retry(client, pahe_embed_url)
         
         if response.status_code != 200:
@@ -268,7 +300,6 @@ class KwikPahe:
             
             kwik_url = kwik_match.group(1)
         
-        # Ensure we use the /f/ endpoint
-        kwik_url = kwik_url.replace('/d/', '/f/')
+        kwik_url = self._normalize_kwik_url(kwik_url)
         
         return await self.decode_kwik_page(client, kwik_url)
