@@ -53,6 +53,21 @@ run_web.bat
 - `POST /api/backup/import` - import settings + queue/history backup payload.
 - `POST /api/maintenance/cleanup` - remove stale partial/lock files and orphan queue entries.
 
+## Host Access Notes
+AnimePahe currently redirects `animepahe.org` to `animepahe.pw`; the web backend defaults to the current `.pw` host. Override it with `ANIMEPAHE_BASE_URL` only if the public host changes again.
+
+If Kwik returns `403 Forbidden` while the same page works in your browser, the host may be requiring a fresh browser session for your IP. The backend can reuse an explicit Netscape-format cookie export for Kwik without reading browser profile databases:
+
+```powershell
+$env:KWIK_COOKIE_FILE="C:\path\to\cookies.txt"
+$env:KWIK_USER_AGENT="Mozilla/5.0 ..."
+npm run start:localhost
+```
+
+Export only cookies you are allowed to use, keep the file private, and refresh it from a browser session on the same IP if the host expires it.
+
+A CSV export from the browser network tab is not enough for this. It usually omits the `Cookie`, `Set-Cookie`, request-header, and response-body data required to replay a normal browser session.
+
 ## Project structure
 - `web/` – FastAPI backend (`main.py`, routes, core logic)
 - `frontend/` – Vite/Vanilla JS UI

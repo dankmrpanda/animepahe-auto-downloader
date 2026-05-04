@@ -3,7 +3,7 @@
 # This file keeps sensitive / environment files and local artifacts
 # from being accidentally committed
 # -------------------------------
-
+cookies.txt
 # Python virtual environments
 env/
 venv/

@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from core.kwik import DEFAULT_BROWSER_USER_AGENT
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -66,11 +68,18 @@ def _check_disk_space(download_path: str) -> dict[str, Any]:
         return {"ok": False, "detail": f"Disk usage check failed: {e}", "path": download_path}
 
 
-async def _check_internet_reachability(test_url: str = "https://animepahe.org") -> dict[str, Any]:
+async def _check_internet_reachability(test_url: str = "https://animepahe.pw") -> dict[str, Any]:
     timeout = httpx.Timeout(8.0, connect=4.0)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(test_url)
+            response = await client.get(
+                test_url,
+                headers={
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "accept-language": "en-US,en;q=0.9",
+                    "user-agent": os.environ.get("ANIMEPAHE_USER_AGENT", DEFAULT_BROWSER_USER_AGENT),
+                },
+            )
         return {
             "ok": response.status_code < 500,
             "detail": f"Reachable ({response.status_code})",

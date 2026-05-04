@@ -4,6 +4,20 @@ cd /d "%~dp0"
 
 echo Starting AnimePahe Web Downloader...
 
+REM Refresh host/session-related environment variables on every launch.
+REM cookies.txt is expected next to this batch file and is ignored by git.
+set "KWIK_COOKIE_FILE=%~dp0cookies.txt"
+set "BROWSER_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+set "KWIK_USER_AGENT=%BROWSER_USER_AGENT%"
+set "ANIMEPAHE_USER_AGENT=%BROWSER_USER_AGENT%"
+set "ANIMEPAHE_BASE_URL=https://animepahe.pw"
+
+if exist "%KWIK_COOKIE_FILE%" (
+    echo Using Kwik cookie file: %KWIK_COOKIE_FILE%
+) else (
+    echo Warning: %KWIK_COOKIE_FILE% was not found. Kwik may return HTTP 403 until cookies.txt is exported.
+)
+
 REM Attempt to activate Conda base using the provided activate.bat (works for Windows installs)
 if exist "C:\ProgramData\miniconda3\Scripts\activate.bat" (
     echo Activating conda from C:\ProgramData\miniconda3

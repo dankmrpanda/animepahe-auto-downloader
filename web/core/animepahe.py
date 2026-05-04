@@ -7,6 +7,7 @@ import re
 import time
 import asyncio
 import logging
+import os
 import httpx
 import html
 from urllib.parse import quote, unquote
@@ -106,7 +107,7 @@ class AnimePaheError(Exception):
 class AnimePaheClient:
     """Async client for AnimePahe website"""
     
-    BASE_URL = "https://animepahe.org"
+    BASE_URL = os.environ.get("ANIMEPAHE_BASE_URL", "https://animepahe.pw").rstrip("/")
     
     def __init__(self):
         self.kwik = KwikPahe()
