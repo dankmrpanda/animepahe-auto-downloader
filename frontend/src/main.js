@@ -354,7 +354,19 @@ const API = {
         return res.json();
     },
 
-    async getQueueStatus() {
+    async getQueueStatus({ force = false } = {}) {
+        if (force) {
+            this._invalidateByPrefix('GET:/queue');
+            return this._cachedGet(
+                `/queue?_=${Date.now()}`,
+                {
+                    ttlMs: 0,
+                    cacheKey: `/queue:force:${Date.now()}`,
+                    errorMessage: 'Failed to get queue status'
+                }
+            );
+        }
+
         return this._cachedGet(
             '/queue',
             {
@@ -877,9 +889,9 @@ function backToSearch() {
 // Downloads View
 // ============================================
 
-async function refreshQueueStatus() {
+async function refreshQueueStatus(options = {}) {
     try {
-        const status = await API.getQueueStatus();
+        const status = await API.getQueueStatus(options);
         updateQueueStatus(status);
     } catch (error) {
         console.error('Failed to refresh queue status:', error);
@@ -985,7 +997,8 @@ function updateDownloadProgress(task) {
         updateDownloadItem(existingItem, task);
     }
 
-    refreshQueueStatus();
+    const isTerminal = ['completed', 'failed', 'stopped'].includes(task.status);
+    refreshQueueStatus({ force: isTerminal });
 }
 
 function getSmoothedSpeed(taskId, currentSpeed) {
@@ -1006,7 +1019,8 @@ function getProgressText(task) {
     if (task.status === 'stopped') return 'Stopped';
     if (task.status === 'stopping') return 'Stopping...';
     if (task.status === 'pending') return 'Pending';
-    return `${task.progress.toFixed(1)}%`;
+    const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
+    return `${progress.toFixed(1)}%`;
 }
 
 function getFailureSummary(task) {
@@ -1057,6 +1071,9 @@ function renderDownloadList(status) {
     container.innerHTML = allItems.map(task => {
         const smoothSpeed = task.speed > 0 ? getSmoothedSpeed(task.id, task.speed) : 0;
         const isIndeterminate = task.status === 'downloading' && task.total_bytes === 0;
+        const progress = task.status === 'completed'
+            ? 100
+            : Math.max(0, Math.min(100, Number(task.progress) || 0));
         const retryInfo = task.retry_count > 0 ? ` (retry ${task.retry_count})` : '';
         const failureSummary = getFailureSummary(task);
 
@@ -1077,7 +1094,7 @@ function renderDownloadList(status) {
             </div>
             <div class="download-progress">
                 <div class="progress-bar">
-                    <div class="progress-fill${isIndeterminate ? ' indeterminate' : ''}" style="width: ${isIndeterminate ? '30' : task.progress}%"></div>
+                    <div class="progress-fill${isIndeterminate ? ' indeterminate' : ''}" style="width: ${isIndeterminate ? '30' : progress}%"></div>
                 </div>
                 <div class="progress-text">
                     ${getProgressText(task)}
@@ -1119,9 +1136,12 @@ function updateDownloadItem(element, task) {
 
     if (progressFill) {
         const isIndeterminate = task.status === 'downloading' && task.total_bytes === 0;
+        const progress = task.status === 'completed'
+            ? 100
+            : Math.max(0, Math.min(100, Number(task.progress) || 0));
         progressFill.classList.toggle('indeterminate', isIndeterminate);
         if (!isIndeterminate) {
-            progressFill.style.width = `${task.progress}%`;
+            progressFill.style.width = `${progress}%`;
         }
     }
 

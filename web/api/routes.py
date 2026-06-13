@@ -66,6 +66,8 @@ def init_clients(client: AnimePaheClient, manager: DownloadManager, config: Conf
     # Add progress callback
     async def progress_callback(task: DownloadTask):
         await broadcast_progress(task)
+        if task.status in {"completed", "failed", "stopped"}:
+            await broadcast_status()
 
     download_manager.add_progress_callback(progress_callback)
 

@@ -46,6 +46,8 @@ Windows users can also run:
 run_web.bat
 ```
 
+`run_web.bat` activates the `animepahe` conda environment, runs startup checks, installs missing dependencies, and starts the API server on `http://127.0.0.1:8000`. It also refreshes the host/session environment variables listed in the Host Access Notes section on every launch.
+
 ## Localhost Diagnostics and Maintenance
 - `GET /health` - local health status, queue summary, metrics, startup checks.
 - `GET /api/diagnostics` - recent failures + environment checks.
@@ -56,13 +58,32 @@ run_web.bat
 ## Host Access Notes
 AnimePahe currently redirects `animepahe.org` to `animepahe.pw`; the web backend defaults to the current `.pw` host. Override it with `ANIMEPAHE_BASE_URL` only if the public host changes again.
 
-If Kwik returns `403 Forbidden` while the same page works in your browser, the host may be requiring a fresh browser session for your IP. The backend can reuse an explicit Netscape-format cookie export for Kwik without reading browser profile databases:
+If Kwik returns `403 Forbidden` while the same page works in your browser, the host may be requiring a fresh browser session for your IP. The backend can reuse an explicit Netscape-format cookie export for Kwik without reading browser profile databases.
+
+For the Windows batch startup, export the Kwik browser cookies to `cookies.txt` in the repository root:
+
+```text
+animepahe-auto-downloader/
+  cookies.txt
+  run_web.bat
+```
+
+Then launch:
+
+```bat
+run_web.bat
+```
+
+The batch script sets these values on every launch:
 
 ```powershell
-$env:KWIK_COOKIE_FILE="C:\path\to\cookies.txt"
-$env:KWIK_USER_AGENT="Mozilla/5.0 ..."
-npm run start:localhost
+$env:KWIK_COOKIE_FILE="<repo>\cookies.txt"
+$env:KWIK_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+$env:ANIMEPAHE_USER_AGENT=$env:KWIK_USER_AGENT
+$env:ANIMEPAHE_BASE_URL="https://animepahe.pw"
 ```
+
+For non-batch startup, set the same environment variables before running `npm run start:localhost`.
 
 Export only cookies you are allowed to use, keep the file private, and refresh it from a browser session on the same IP if the host expires it.
 

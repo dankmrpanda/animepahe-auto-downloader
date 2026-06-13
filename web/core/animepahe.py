@@ -38,6 +38,23 @@ def _parse_size_to_bytes(size_text: str) -> Optional[int]:
     return int(value * factor)
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """Convert optional API numeric values into a response-model-safe float."""
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_str(value, default: str = "") -> str:
+    """Convert optional API text values into response-model-safe strings."""
+    if value is None:
+        return default
+    return str(value)
+
+
 @dataclass
 class AnimeSearchResult:
     """Represents a search result from AnimePahe"""
@@ -203,14 +220,14 @@ class AnimePaheClient:
                         images = anime.get("images", {}).get("jpg", {})
                         
                         details = {
-                            "poster": images.get("large_image_url") or images.get("image_url") or "",
-                            "synopsis": anime.get("synopsis", ""),
-                            "score": anime.get("score", 0.0),
-                            "status": anime.get("status", ""),
-                            "aired": anime.get("aired", {}).get("string", ""),
-                            "genres": [g.get("name") for g in anime.get("genres", [])],
-                            "english_title": anime.get("title_english", ""),
-                            "japanese_title": anime.get("title_japanese", ""),
+                            "poster": _safe_str(images.get("large_image_url") or images.get("image_url")),
+                            "synopsis": _safe_str(anime.get("synopsis")),
+                            "score": _safe_float(anime.get("score")),
+                            "status": _safe_str(anime.get("status")),
+                            "aired": _safe_str((anime.get("aired") or {}).get("string")),
+                            "genres": [g.get("name") for g in (anime.get("genres") or []) if g.get("name")],
+                            "english_title": _safe_str(anime.get("title_english")),
+                            "japanese_title": _safe_str(anime.get("title_japanese")),
                         }
                         self._mal_details_cache.set(cache_key, details)
                         return details
@@ -405,6 +422,7 @@ class AnimePaheClient:
             "last_page": api_data.get("last_page", 1),
             "per_page": api_data.get("per_page", 30),
             **mal_details,
+            "score": _safe_float(mal_details.get("score")),
             "poster": final_poster
         }
         self._details_cache.set(session_id, result)
