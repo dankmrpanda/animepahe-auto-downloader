@@ -66,6 +66,16 @@ def _npm_command() -> str:
     return "npm"
 
 
+def check_uv() -> bool:
+    uv_raw = _command_output(["uv", "--version"])
+    if not uv_raw:
+        _fail("UV is not available on PATH")
+        _info("Install UV from https://docs.astral.sh/uv/getting-started/installation/")
+        return False
+    _ok(uv_raw)
+    return True
+
+
 def check_python() -> bool:
     if sys.version_info < MIN_PYTHON:
         _fail(
@@ -103,13 +113,18 @@ def check_node() -> bool:
 
 def check_python_dependencies() -> bool:
     required_imports = {
-        "fastapi": "fastapi",
-        "uvicorn": "uvicorn",
-        "httpx": "httpx",
-        "websockets": "websockets",
-        "pydantic": "pydantic",
         "aiofiles": "aiofiles",
+        "fastapi": "fastapi",
+        "httpx": "httpx",
+        "pydantic": "pydantic",
+        "python-dotenv": "dotenv",
         "python-multipart": "multipart",
+        "requests": "requests",
+        "selenium": "selenium",
+        "tqdm": "tqdm",
+        "uvicorn": "uvicorn",
+        "webdriver-manager": "webdriver_manager",
+        "websockets": "websockets",
     }
     missing = [
         package
@@ -118,18 +133,10 @@ def check_python_dependencies() -> bool:
     ]
     if missing:
         _fail(f"Missing Python packages: {', '.join(missing)}")
+        _info("Run `uv sync` from the repository root to install Python dependencies.")
         return False
     _ok("Required Python packages are installed")
     return True
-
-
-def install_python_dependencies(root: Path) -> bool:
-    requirements = root / "web" / "requirements.txt"
-    if not requirements.exists():
-        _fail(f"Missing requirements file: {requirements}")
-        return False
-    _info(f"Installing Python dependencies from {requirements}")
-    return _run_command([sys.executable, "-m", "pip", "install", "-r", str(requirements)])
 
 
 def install_node_dependencies(root: Path) -> bool:
@@ -169,11 +176,9 @@ def check_node_dependencies(root: Path) -> bool:
 def ensure_python_dependencies(root: Path, install_missing: bool) -> bool:
     if check_python_dependencies():
         return True
-    if not install_missing:
-        return False
-    if not install_python_dependencies(root):
-        return False
-    return check_python_dependencies()
+    if install_missing:
+        _info("Python dependencies are managed by UV; automatic package installs are disabled here.")
+    return False
 
 
 def ensure_node_dependencies(root: Path, install_missing: bool) -> bool:
@@ -204,6 +209,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     all_ok = True
 
+    all_ok = check_uv() and all_ok
     all_ok = check_python() and all_ok
     all_ok = check_node() and all_ok
 

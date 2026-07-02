@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "description": "AnimePahe Auto Downloader",
   "scripts": {
-    "check:env": "python scripts/localhost_checks.py --mode env",
-    "check:setup": "python scripts/localhost_checks.py --mode setup",
-    "check:start": "python scripts/localhost_checks.py --mode start",
-    "setup": "npm run check:env && pip install -r requirements.txt -r web/requirements.txt && cd frontend && npm install",
-    "dev": "concurrently \"python web/main.py\" \"cd frontend && npm run dev\" --names \"API,UI\" --prefix-colors \"blue,green\" --kill-others",
-    "build": "cd frontend && npm run build",
-    "start:localhost": "npm run check:start && cd web && python -m uvicorn main:app --host 127.0.0.1 --port 8000",
+    "check:env": "uv run python scripts/localhost_checks.py --mode env",
+    "check:setup": "uv run python scripts/localhost_checks.py --mode setup",
+    "check:start": "uv run python scripts/localhost_checks.py --mode start",
+    "setup": "uv sync && npm install && npm --prefix frontend install",
+    "dev": "concurrently \"uv run python web/main.py\" \"npm --prefix frontend run dev\" --names \"API,UI\" --prefix-colors \"blue,green\" --kill-others",
+    "build": "npm --prefix frontend run build",
+    "start:localhost": "npm run check:start && cd web && uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000",
     "start": "npm run dev"
   },
   "devDependencies": {

@@ -1,0 +1,22 @@
+[project]
+name = "animepahe-auto-downloader"
+version = "1.0.0"
+description = "AnimePahe downloader with a FastAPI backend and Vite frontend."
+requires-python = ">=3.10"
+dependencies = [
+    "aiofiles>=23.2.1",
+    "fastapi>=0.109.0",
+    "httpx>=0.26.0",
+    "pydantic>=2.5.3",
+    "python-dotenv",
+    "python-multipart>=0.0.6",
+    "requests",
+    "selenium",
+    "tqdm",
+    "uvicorn[standard]>=0.27.0",
+    "webdriver-manager",
+    "websockets>=12.0",
+]
+
+[tool.uv]
+package = false

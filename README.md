@@ -11,13 +11,13 @@ Full-stack downloader for AnimePahe with a FastAPI backend and a Vite/Vanilla JS
 
 ## Prerequisites
 - Python 3.10+
+- UV
 - Node.js 18+ and npm
 
 ## Setup
 ```bash
 git clone https://github.com/your-username/animepahe-auto-downloader.git
 cd animepahe-auto-downloader
-npm install
 npm run setup
 ```
 
@@ -46,7 +46,7 @@ Windows users can also run:
 run_web.bat
 ```
 
-`run_web.bat` activates the `animepahe` conda environment, runs startup checks, installs missing dependencies, and starts the API server on `http://127.0.0.1:8000`. It also refreshes the host/session environment variables listed in the Host Access Notes section on every launch.
+`run_web.bat` verifies UV is installed, synchronizes the repo-local Python environment, runs startup checks, and starts the API server on `http://127.0.0.1:8000`. It also refreshes the host/session environment variables listed in the Host Access Notes section on every launch.
 
 ## Localhost Diagnostics and Maintenance
 - `GET /health` - local health status, queue summary, metrics, startup checks.

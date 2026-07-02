@@ -1,5 +1,0 @@
-selenium
-webdriver-manager
-requests
-python-dotenv
-tqdm

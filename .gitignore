@@ -8,6 +8,10 @@ cookies.txt
 env/
 venv/
 .venv/
+.uv-bin/
+.uv-cache/
+.uv-python/
+.npm-cache/
 
 # Python artifacts
 __pycache__/

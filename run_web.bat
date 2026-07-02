@@ -18,20 +18,23 @@ if exist "%KWIK_COOKIE_FILE%" (
     echo Warning: %KWIK_COOKIE_FILE% was not found. Kwik may return HTTP 403 until cookies.txt is exported.
 )
 
-REM Attempt to activate Conda base using the provided activate.bat (works for Windows installs)
-if exist "C:\ProgramData\miniconda3\Scripts\activate.bat" (
-    echo Activating conda from C:\ProgramData\miniconda3
-    call "C:\ProgramData\miniconda3\Scripts\activate.bat" "C:\ProgramData\miniconda3"
-) else (
-    REM Fallback to PATH-based conda (if available)
-    echo Conda activation script not found at C:\ProgramData\miniconda3\Scripts\activate.bat; relying on PATH
+where uv > nul 2> nul
+if errorlevel 1 (
+    echo UV is required but was not found on PATH.
+    echo Install UV from https://docs.astral.sh/uv/getting-started/installation/
+    echo Then reopen this terminal and run run_web.bat again.
+    goto done
 )
 
-REM Activate the animepahe environment
-call conda activate animepahe
+echo Synchronizing Python dependencies with UV...
+uv sync
+if errorlevel 1 (
+    echo UV dependency sync failed. Resolve the errors above and try again.
+    goto done
+)
 
-echo Running localhost startup checks and installing missing dependencies...
-python scripts\localhost_checks.py --mode start --install-missing
+echo Running localhost startup checks...
+uv run python scripts\localhost_checks.py --mode start
 if errorlevel 1 (
     echo Startup checks failed. Resolve the errors above and try again.
     goto done
@@ -55,7 +58,7 @@ if defined LISTEN_PID (
 
 :runserver
 echo Starting API server in production mode (no reload)...
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000
 set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE% EQU 0 (

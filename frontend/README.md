@@ -4,16 +4,16 @@ This is the frontend for the AnimePahe Web Downloader, built with Vite.
 
 ## Setup
 
-1.  Install dependencies:
+1.  Install dependencies from the repository root:
     ```bash
-    npm install
+    npm run setup
     ```
 
 ## Development
 
 1.  Start the backend server (in the root directory):
     ```bash
-    python web/main.py
+    uv run python web/main.py
     ```
     This will start the API server on `http://localhost:8000`.
 

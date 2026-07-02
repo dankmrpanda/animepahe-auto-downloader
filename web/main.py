@@ -108,6 +108,17 @@ app.add_middleware(
 # Include API routes
 app.include_router(api_router)
 
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return build_health_payload(
+        download_manager=download_manager,
+        startup_checks=startup_checks,
+        started_at=app_started_at,
+    )
+
+
 # Serve static files (Production build)
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 
@@ -121,16 +132,6 @@ else:
             "status": "running",
             "frontend": "Run 'npm run dev' in frontend directory for development, or 'npm run build' for production.",
         }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return build_health_payload(
-        download_manager=download_manager,
-        startup_checks=startup_checks,
-        started_at=app_started_at,
-    )
 
 
 if __name__ == "__main__":
