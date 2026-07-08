@@ -624,7 +624,7 @@ function updateLinkProgress(processed, total) {
     if (spinner) {
         const p = spinner.querySelector('p');
         if (p) {
-            p.textContent = `Resolving download links: ${processed}/${total}...`;
+            p.textContent = `Preparing download queue: ${processed}/${total}...`;
         }
     }
     if (total > 0 && processed >= total) {
@@ -637,8 +637,8 @@ function handleLinkError(error, animeTitle, reason = null, detail = null) {
     state.processingDownloads = false;
     const reasonLabel = reason ? `${getFailureLabel(reason)}: ` : '';
     const errorText = detail || error;
-    showToast('error', 'Link Error', `${reasonLabel}Failed to resolve links for ${animeTitle}: ${errorText}`);
-    announceStatus(`Download link resolution failed for ${animeTitle}.`, true);
+    showToast('error', 'Queue Error', `${reasonLabel}Failed to prepare downloads for ${animeTitle}: ${errorText}`);
+    announceStatus(`Download queue preparation failed for ${animeTitle}.`, true);
 }
 
 function handleSettingsBroadcast(settings) {
@@ -1532,7 +1532,7 @@ function renderDownloadList(status) {
                         </svg>
                     </div>
                     <h3>Processing Downloads</h3>
-                    <p>Fetching download links and preparing queue...</p>
+                    <p>Preparing download queue...</p>
                 </div>
             `;
         } else {
@@ -2159,7 +2159,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const quality = parseInt(document.getElementById('quality-select').value, 10);
 
         try {
-            showToast('info', 'Preparing...', 'Getting download links');
+            showToast('info', 'Preparing...', 'Preparing download queue');
             state.processingDownloads = true;
 
             const result = await API.startDownload(

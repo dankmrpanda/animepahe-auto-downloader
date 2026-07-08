@@ -48,6 +48,7 @@ def init_db(db_path: Path = STATE_DB_PATH) -> None:
                 anime_title TEXT NOT NULL,
                 anime_session TEXT,
                 episode_session TEXT,
+                download_options TEXT,
                 episode REAL NOT NULL,
                 resolution INTEGER NOT NULL,
                 status TEXT NOT NULL,
@@ -78,6 +79,7 @@ def init_db(db_path: Path = STATE_DB_PATH) -> None:
         # Lightweight migrations for existing databases.
         _ensure_column(conn, "download_tasks", "anime_session", "TEXT")
         _ensure_column(conn, "download_tasks", "episode_session", "TEXT")
+        _ensure_column(conn, "download_tasks", "download_options", "TEXT")
         _ensure_column(conn, "download_tasks", "failure_reason", "TEXT")
         _ensure_column(conn, "download_tasks", "failure_detail", "TEXT")
 
@@ -139,19 +141,21 @@ def mark_recoverable_tasks_pending(db_path: Path = STATE_DB_PATH) -> int:
 
 
 def upsert_download_task(task: dict[str, Any], db_path: Path = STATE_DB_PATH) -> None:
+    task = dict(task)
+    task.setdefault("download_options", None)
     init_db(db_path)
     with _connect(db_path) as conn:
         conn.execute(
             """
             INSERT INTO download_tasks (
-                id, url, filename, anime_title, anime_session, episode_session,
+                id, url, filename, anime_title, anime_session, episode_session, download_options,
                 episode, resolution, status,
                 progress, downloaded_bytes, total_bytes, speed, error,
                 failure_reason, failure_detail,
                 retry_count, max_retries, terminal, created_at,
                 started_at, completed_at, updated_at
             ) VALUES (
-                :id, :url, :filename, :anime_title, :anime_session, :episode_session,
+                :id, :url, :filename, :anime_title, :anime_session, :episode_session, :download_options,
                 :episode, :resolution, :status,
                 :progress, :downloaded_bytes, :total_bytes, :speed, :error,
                 :failure_reason, :failure_detail,
@@ -164,6 +168,7 @@ def upsert_download_task(task: dict[str, Any], db_path: Path = STATE_DB_PATH) ->
                 anime_title=excluded.anime_title,
                 anime_session=excluded.anime_session,
                 episode_session=excluded.episode_session,
+                download_options=excluded.download_options,
                 episode=excluded.episode,
                 resolution=excluded.resolution,
                 status=excluded.status,
@@ -189,19 +194,20 @@ def upsert_download_task(task: dict[str, Any], db_path: Path = STATE_DB_PATH) ->
 def upsert_download_tasks(tasks: list[dict[str, Any]], db_path: Path = STATE_DB_PATH) -> None:
     if not tasks:
         return
+    tasks = [dict(task, download_options=task.get("download_options")) for task in tasks]
     init_db(db_path)
     with _connect(db_path) as conn:
         conn.executemany(
             """
             INSERT INTO download_tasks (
-                id, url, filename, anime_title, anime_session, episode_session,
+                id, url, filename, anime_title, anime_session, episode_session, download_options,
                 episode, resolution, status,
                 progress, downloaded_bytes, total_bytes, speed, error,
                 failure_reason, failure_detail,
                 retry_count, max_retries, terminal, created_at,
                 started_at, completed_at, updated_at
             ) VALUES (
-                :id, :url, :filename, :anime_title, :anime_session, :episode_session,
+                :id, :url, :filename, :anime_title, :anime_session, :episode_session, :download_options,
                 :episode, :resolution, :status,
                 :progress, :downloaded_bytes, :total_bytes, :speed, :error,
                 :failure_reason, :failure_detail,
@@ -214,6 +220,7 @@ def upsert_download_tasks(tasks: list[dict[str, Any]], db_path: Path = STATE_DB_
                 anime_title=excluded.anime_title,
                 anime_session=excluded.anime_session,
                 episode_session=excluded.episode_session,
+                download_options=excluded.download_options,
                 episode=excluded.episode,
                 resolution=excluded.resolution,
                 status=excluded.status,
@@ -241,7 +248,7 @@ def load_download_tasks(db_path: Path = STATE_DB_PATH) -> list[dict[str, Any]]:
     with _connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, url, filename, anime_title, anime_session, episode_session,
+            SELECT id, url, filename, anime_title, anime_session, episode_session, download_options,
                    episode, resolution, status,
                    progress, downloaded_bytes, total_bytes, speed, error,
                    failure_reason, failure_detail,

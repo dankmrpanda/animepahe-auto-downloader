@@ -5,6 +5,7 @@ API Routes for AnimePahe Web Downloader
 import os
 import sys
 import uuid
+import json
 import logging
 import asyncio
 from datetime import datetime, timezone
@@ -36,14 +37,6 @@ app_config: Optional[Config] = None
 
 # WebSocket connections for progress updates
 connected_websockets: set[WebSocket] = set()
-
-
-def _is_kwik_session_rejected_error(error: Exception) -> bool:
-    message = str(error)
-    return (
-        "Kwik still returned HTTP 403" in message
-        or "Cloudflare rejected the exported browser session" in message
-    )
 
 
 def _format_bytes(size: int) -> str:
@@ -78,6 +71,7 @@ def init_clients(client: AnimePaheClient, manager: DownloadManager, config: Conf
             await broadcast_status()
 
     download_manager.add_progress_callback(progress_callback)
+    download_manager.set_link_resolver(lambda task: _resolve_task_download_link(task, client))
 
 
 # ============= WebSocket Broadcast Helpers =============
@@ -149,6 +143,25 @@ def _select_download_option(options: list[DownloadOption], target_resolution: in
     return max(options, key=lambda x: x.resolution)
 
 
+async def _resolve_task_download_link(task: DownloadTask, client: AnimePaheClient) -> dict:
+    if task.download_options:
+        options = [DownloadOption(**option) for option in task.download_options]
+    else:
+        if not task.anime_session or not task.episode_session:
+            raise RuntimeError("Task is missing AnimePahe metadata required to resolve the download link")
+        options = await client.get_episode_download_options(task.anime_session, task.episode_session)
+
+    if not options:
+        raise RuntimeError("No download options found")
+
+    selected = _select_download_option(options, task.resolution)
+    direct_link = await client.get_direct_download_link(selected.pahe_link)
+    return {
+        "url": direct_link,
+        "resolution": selected.resolution,
+    }
+
+
 def _normalize_import_task(raw: dict) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     status = str(raw.get("status") or "pending").strip().lower()
@@ -158,6 +171,11 @@ def _normalize_import_task(raw: dict) -> dict:
     retry_count = int(raw.get("retry_count") or 0)
     max_retries = int(raw.get("max_retries") or 3)
     terminal = bool(raw.get("terminal"))
+    download_options = raw.get("download_options")
+    if isinstance(download_options, list):
+        download_options = json.dumps(download_options)
+    elif download_options is not None:
+        download_options = str(download_options)
 
     return {
         "id": str(raw.get("id") or str(uuid.uuid4())),
@@ -166,6 +184,7 @@ def _normalize_import_task(raw: dict) -> dict:
         "anime_title": str(raw.get("anime_title") or "Unknown"),
         "anime_session": raw.get("anime_session"),
         "episode_session": raw.get("episode_session"),
+        "download_options": download_options,
         "episode": float(raw.get("episode") or 0.0),
         "resolution": int(raw.get("resolution") or 0),
         "status": status,
@@ -304,59 +323,37 @@ async def start_download(request: DownloadRequest):
             total = len(episodes_to_download)
             processed = 0
             try:
-                link_errors: list[str] = []
-                resolved_links: list[dict] = []
-                for episode in episodes_to_download:
-                    try:
-                        options = await animepahe_client.get_episode_download_options(
-                            request.anime_session,
-                            episode.session,
-                        )
-                        if not options:
-                            raise RuntimeError("No download options found")
-                        selected = _select_download_option(options, request.resolution)
-                        direct_link = await animepahe_client.get_direct_download_link(selected.pahe_link)
-                        resolved_links.append(
-                            {
-                                "episode": episode.episode,
-                                "session": episode.session,
-                                "resolution": selected.resolution,
-                                "direct_link": direct_link,
-                            }
-                        )
-                    except Exception as e:
-                        if _is_kwik_session_rejected_error(e):
-                            raise RuntimeError(
-                                f"No links resolved (link_expired): Episode {episode.episode}: {e}"
-                            )
-                        link_errors.append(str(e))
-                    processed += 1
-                    await broadcast_link_progress(processed, total)
-
-                if resolved_links:
-                    resolved_links.sort(key=lambda x: float(x.get("episode", 0)))
-
+                queue_errors: list[str] = []
                 added_count = 0
-                for link_info in resolved_links:
+                for episode in sorted(episodes_to_download, key=lambda item: float(item.episode)):
                     task = await download_manager.add_task(
-                        url=link_info["direct_link"],
+                        url="",
                         anime_title=request.anime_title,
-                        episode=link_info["episode"],
-                        resolution=link_info["resolution"],
+                        episode=episode.episode,
+                        resolution=request.resolution,
                         anime_session=request.anime_session,
-                        episode_session=link_info.get("session"),
+                        episode_session=episode.session,
                     )
                     if task:
                         added_count += 1
+                    else:
+                        queue_errors.append(f"Episode {episode.episode}: file is locked or already queued")
+                    processed += 1
+                    await broadcast_link_progress(processed, total)
 
-                if added_count == 0 and link_errors:
-                    first_error = link_errors[0]
+                if added_count == 0 and queue_errors:
+                    first_error = queue_errors[0]
                     reason, detail = classify_failure(first_error)
-                    raise RuntimeError(f"No links resolved ({reason}): {detail}")
+                    raise RuntimeError(f"No episodes queued ({reason}): {detail}")
+                if queue_errors:
+                    await broadcast_link_error(
+                        f"Queued {added_count} episodes; skipped {len(queue_errors)}: {queue_errors[0]}",
+                        request.anime_title,
+                    )
 
                 await broadcast_status()
             except Exception as e:
-                logger.error("Error processing download links: %s", e)
+                logger.error("Error preparing download queue: %s", e)
                 await broadcast_link_error(str(e), request.anime_title)
 
         asyncio.create_task(process_and_queue())
@@ -401,60 +398,46 @@ async def start_manual_import_download(request: ManualImportDownloadRequest):
         total = len(imported_episodes)
         processed = 0
         try:
-            link_errors: list[str] = []
-            resolved_links: list[dict] = []
-            for episode in imported_episodes:
-                try:
-                    options = list(episode.options)
-                    if not options:
-                        raise RuntimeError(
-                            "No imported pahe.win options found. Run the generated browser console "
-                            "command and paste its enhanced JSON output."
-                        )
-                    selected = _select_download_option(options, request.resolution)
-                    direct_link = await animepahe_client.get_direct_download_link(selected.pahe_link)
-                    resolved_links.append(
-                        {
-                            "episode": episode.episode,
-                            "session": episode.session,
-                            "resolution": selected.resolution,
-                            "direct_link": direct_link,
-                        }
-                    )
-                except Exception as e:
-                    if _is_kwik_session_rejected_error(e):
-                        raise RuntimeError(
-                            f"No links resolved (link_expired): Episode {episode.episode}: {e}"
-                        )
-                    error_text = f"Episode {episode.episode}: {e}"
-                    link_errors.append(error_text)
-                processed += 1
-                await broadcast_link_progress(processed, total)
-
-            if resolved_links:
-                resolved_links.sort(key=lambda x: float(x.get("episode", 0)))
-
+            queue_errors: list[str] = []
             added_count = 0
-            for link_info in resolved_links:
+            for episode in sorted(imported_episodes, key=lambda item: float(item.episode)):
+                if not episode.options:
+                    queue_errors.append(
+                        f"Episode {episode.episode}: No imported pahe.win options found. "
+                        "Run the generated browser console command and paste its enhanced JSON output."
+                    )
+                    processed += 1
+                    await broadcast_link_progress(processed, total)
+                    continue
                 task = await download_manager.add_task(
-                    url=link_info["direct_link"],
+                    url="",
                     anime_title=request.anime_title,
-                    episode=link_info["episode"],
-                    resolution=link_info["resolution"],
+                    episode=episode.episode,
+                    resolution=request.resolution,
                     anime_session=request.anime_session,
-                    episode_session=link_info.get("session"),
+                    episode_session=episode.session,
+                    download_options=list(episode.options),
                 )
                 if task:
                     added_count += 1
+                else:
+                    queue_errors.append(f"Episode {episode.episode}: file is locked or already queued")
+                processed += 1
+                await broadcast_link_progress(processed, total)
 
-            if added_count == 0 and link_errors:
-                first_error = link_errors[0]
+            if added_count == 0 and queue_errors:
+                first_error = queue_errors[0]
                 reason, detail = classify_failure(first_error)
-                raise RuntimeError(f"No links resolved ({reason}): {detail}")
+                raise RuntimeError(f"No episodes queued ({reason}): {detail}")
+            if queue_errors:
+                await broadcast_link_error(
+                    f"Queued {added_count} imported episodes; skipped {len(queue_errors)}: {queue_errors[0]}",
+                    request.anime_title,
+                )
 
             await broadcast_status()
         except Exception as e:
-            logger.error("Error processing manual import download links: %s", e)
+            logger.error("Error preparing manual import download queue: %s", e)
             await broadcast_link_error(str(e), request.anime_title)
 
     asyncio.create_task(process_and_queue())
@@ -478,40 +461,21 @@ async def batch_download(request: BatchDownloadRequest):
         if not episodes_to_download:
             raise HTTPException(status_code=400, detail="No episodes in specified range")
 
-        links = []
-        errors = []
-        for episode in episodes_to_download:
-            try:
-                options = await animepahe_client.get_episode_download_options(
-                    request.anime_session,
-                    episode.session,
-                )
-                if not options:
-                    raise RuntimeError("No download options found")
-                selected = _select_download_option(options, request.resolution)
-                direct_link = await animepahe_client.get_direct_download_link(selected.pahe_link)
-                links.append(
-                    {
-                        "episode": episode.episode,
-                        "session": episode.session,
-                        "resolution": selected.resolution,
-                        "direct_link": direct_link,
-                    }
-                )
-            except Exception as e:
-                errors.append({"episode": episode.episode, "error": str(e)})
-
-        links.sort(key=lambda x: float(x.get("episode", 0)))
         added_tasks = []
-        for link_info in links:
+        errors = []
+        for episode in sorted(episodes_to_download, key=lambda item: float(item.episode)):
             task = await download_manager.add_task(
-                url=link_info["direct_link"], anime_title=request.anime_title,
-                episode=link_info["episode"], resolution=link_info["resolution"],
+                url="",
+                anime_title=request.anime_title,
+                episode=episode.episode,
+                resolution=request.resolution,
                 anime_session=request.anime_session,
-                episode_session=link_info.get("session"),
+                episode_session=episode.session,
             )
             if task:
                 added_tasks.append(download_manager._task_to_dict(task))
+            else:
+                errors.append({"episode": episode.episode, "error": "File is locked or already queued"})
         await broadcast_status()
         return {
             "status": "queued", "added_count": len(added_tasks),
@@ -571,19 +535,15 @@ async def re_resolve_task(task_id: str):
         )
 
     try:
-        options = await animepahe_client.get_episode_download_options(
-            task.anime_session, task.episode_session,
-        )
-        selected = _select_download_option(options, task.resolution)
-        direct_link = await animepahe_client.get_direct_download_link(selected.pahe_link)
+        resolved = await _resolve_task_download_link(task, animepahe_client)
         new_task = await download_manager.add_task(
-            url=direct_link,
+            url=resolved["url"],
             anime_title=task.anime_title,
             episode=task.episode,
-            resolution=selected.resolution,
-            filename=task.filename,
+            resolution=int(resolved.get("resolution") or task.resolution),
             anime_session=task.anime_session,
             episode_session=task.episode_session,
+            download_options=task.download_options,
         )
         if not new_task:
             raise HTTPException(status_code=409, detail="Task already queued or file already exists")

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import inspect
+import json
 import logging
 import os
 import re
@@ -41,6 +43,53 @@ DEFAULT_MAX_RETRIES = 3
 # Disk-space safety policy
 UNKNOWN_EPISODE_SIZE_BYTES = 350 * 1024 * 1024
 DISK_SPACE_SAFETY_MARGIN_BYTES = 512 * 1024 * 1024
+
+
+def _resolution_label(resolution: int) -> str:
+    if resolution == 0:
+        return "best"
+    if resolution == -1:
+        return "lowest"
+    return f"{resolution}p"
+
+
+def _default_filename(episode: float, resolution: int) -> str:
+    return sanitize_filename(f"EP{int(episode):02d}_{_resolution_label(resolution)}.mp4")
+
+
+def _normalize_download_options(options: Optional[list[Any]]) -> Optional[list[dict[str, Any]]]:
+    if not options:
+        return None
+
+    normalized: list[dict[str, Any]] = []
+    for option in options:
+        if hasattr(option, "model_dump"):
+            raw = option.model_dump()
+        elif isinstance(option, dict):
+            raw = option
+        else:
+            raw = {
+                "pahe_link": getattr(option, "pahe_link", ""),
+                "quality": getattr(option, "quality", ""),
+                "resolution": getattr(option, "resolution", 0),
+                "audio": getattr(option, "audio", "jpn"),
+                "size": getattr(option, "size", ""),
+            }
+
+        pahe_link = str(raw.get("pahe_link") or "").strip()
+        if not pahe_link:
+            continue
+        normalized.append(
+            {
+                "pahe_link": pahe_link,
+                "quality": str(raw.get("quality") or ""),
+                "resolution": int(raw.get("resolution") or 0),
+                "audio": str(raw.get("audio") or "jpn"),
+                "size": str(raw.get("size") or ""),
+            }
+        )
+
+    return normalized or None
 
 
 class DownloadStallError(Exception):
@@ -82,6 +131,8 @@ def _failure_from_message(message: str) -> tuple[str, str]:
         return "disk_full", msg
     if any(token in lowered for token in ("range not satisfiable", "size mismatch", "mp4 failed", "content-range", "content-length mismatch", "integrity")):
         return "integrity_failed", msg
+    if any(token in lowered for token in ("http 429", "too many requests", "rate limit", "rate-limit")):
+        return "network", msg
     if any(token in lowered for token in ("link expired", "token", "redirect", "kwik", "forbidden", "gone")):
         return "link_expired", msg
     if any(token in lowered for token in ("timeout", "timed out", "connection", "transport", "network", "stall")):
@@ -229,6 +280,13 @@ def _is_retryable(error: Exception) -> bool:
     return False
 
 
+def _is_kwik_session_rejected_message(message: str) -> bool:
+    return (
+        "Kwik still returned HTTP 403" in message
+        or "Cloudflare rejected the exported browser session" in message
+    )
+
+
 @dataclass
 class DownloadTask:
     """Represents a download task."""
@@ -241,6 +299,7 @@ class DownloadTask:
     resolution: int
     anime_session: Optional[str] = None
     episode_session: Optional[str] = None
+    download_options: Optional[list[dict[str, Any]]] = None
     status: str = "pending"  # pending, downloading, completed, failed, stopped, stopping, pausing
     progress: float = 0.0
     downloaded_bytes: int = 0
@@ -280,6 +339,7 @@ class DownloadManager:
         self._restored = False
         self._shutdown_requested = False
         self._progress_callbacks: list[Callable[[DownloadTask], Any]] = []
+        self._link_resolver: Optional[Callable[[DownloadTask], Any]] = None
         self._scaling_lock = asyncio.Lock()
 
         # Duplicate prevention: (anime_title, episode, resolution) -> True
@@ -322,6 +382,9 @@ class DownloadManager:
 
     def add_progress_callback(self, callback: Callable[[DownloadTask], Any]) -> None:
         self._progress_callbacks.append(callback)
+
+    def set_link_resolver(self, resolver: Optional[Callable[[DownloadTask], Any]]) -> None:
+        self._link_resolver = resolver
 
     def remove_progress_callback(self, callback: Callable[[DownloadTask], Any]) -> None:
         if callback in self._progress_callbacks:
@@ -377,6 +440,7 @@ class DownloadManager:
             "anime_title": task.anime_title,
             "anime_session": task.anime_session,
             "episode_session": task.episode_session,
+            "download_options": json.dumps(task.download_options) if task.download_options else None,
             "episode": task.episode,
             "resolution": task.resolution,
             "status": task.status,
@@ -412,6 +476,16 @@ class DownloadManager:
             failure_reason = inferred_reason
             failure_detail = failure_detail or inferred_detail
 
+        download_options = None
+        raw_download_options = row.get("download_options")
+        if raw_download_options:
+            try:
+                parsed_options = json.loads(raw_download_options)
+                if isinstance(parsed_options, list):
+                    download_options = _normalize_download_options(parsed_options)
+            except (TypeError, ValueError):
+                download_options = None
+
         return DownloadTask(
             id=row["id"],
             url=row["url"],
@@ -419,6 +493,7 @@ class DownloadManager:
             anime_title=row["anime_title"],
             anime_session=row.get("anime_session"),
             episode_session=row.get("episode_session"),
+            download_options=download_options,
             episode=float(row["episode"]),
             resolution=int(row["resolution"]),
             status=row["status"],
@@ -500,7 +575,7 @@ class DownloadManager:
         key = (anime_title, episode, resolution)
         if key in self._known_episodes:
             return True
-        candidate_name = sanitize_filename(filename or f"EP{int(episode):02d}_{resolution}p.mp4")
+        candidate_name = sanitize_filename(filename) if filename else _default_filename(episode, resolution)
         task = DownloadTask(
             id="preview",
             url="",
@@ -695,10 +770,15 @@ class DownloadManager:
         filename: Optional[str] = None,
         anime_session: Optional[str] = None,
         episode_session: Optional[str] = None,
+        download_options: Optional[list[Any]] = None,
     ) -> Optional[DownloadTask]:
-        candidate_name = sanitize_filename(filename or f"EP{int(episode):02d}_{resolution}p.mp4")
+        candidate_name = sanitize_filename(filename) if filename else _default_filename(episode, resolution)
+        normalized_options = _normalize_download_options(download_options)
 
         key = (anime_title, episode, resolution)
+        if key in self._known_episodes:
+            logger.debug("Episode already queued or completed, skipping: %s", key)
+            return None
 
         preview = DownloadTask(
             id="preview",
@@ -707,6 +787,7 @@ class DownloadManager:
             anime_title=anime_title,
             anime_session=anime_session,
             episode_session=episode_session,
+            download_options=normalized_options,
             episode=episode,
             resolution=resolution,
         )
@@ -723,6 +804,7 @@ class DownloadManager:
             anime_title=anime_title,
             anime_session=anime_session,
             episode_session=episode_session,
+            download_options=normalized_options,
             episode=episode,
             resolution=resolution,
         )
@@ -731,6 +813,110 @@ class DownloadManager:
         self._persist_task(task)
         await self._notify_progress(task)
         return task
+
+    def _has_link_resolver_metadata(self, task: DownloadTask) -> bool:
+        return bool(task.anime_session and task.episode_session and self._link_resolver)
+
+    async def _resolve_task_link(self, task: DownloadTask) -> None:
+        if task.url:
+            return
+        if not self._link_resolver:
+            raise RuntimeError("Download task is missing a direct URL and no link resolver is configured")
+        if not task.anime_session or not task.episode_session:
+            raise RuntimeError("Download task is missing AnimePahe metadata required to resolve a link")
+
+        old_key = self._episode_key(task)
+        old_resolution = task.resolution
+        old_default_name = _default_filename(task.episode, old_resolution)
+
+        task.error = "Resolving download link..."
+        task.failure_reason = None
+        task.failure_detail = None
+        self._persist_task(task)
+        await self._notify_progress(task)
+
+        result = self._link_resolver(task)
+        if inspect.isawaitable(result):
+            result = await result
+
+        if isinstance(result, str):
+            direct_url = result
+            resolved_resolution = None
+            resolved_filename = None
+        elif isinstance(result, dict):
+            direct_url = str(result.get("url") or result.get("direct_link") or "").strip()
+            resolved_resolution = result.get("resolution")
+            resolved_filename = result.get("filename")
+        else:
+            raise RuntimeError("Link resolver returned an unsupported result")
+
+        if not direct_url:
+            raise RuntimeError("Link resolver returned an empty download URL")
+
+        task.url = direct_url
+        if resolved_resolution is not None:
+            task.resolution = int(resolved_resolution)
+        if resolved_filename:
+            task.filename = sanitize_filename(str(resolved_filename))
+        elif task.filename == old_default_name and task.resolution != old_resolution:
+            task.filename = _default_filename(task.episode, task.resolution)
+
+        new_key = self._episode_key(task)
+        if new_key != old_key:
+            self._known_episodes.discard(old_key)
+            self._known_episodes.add(new_key)
+
+        task.error = None
+        task.failure_reason = None
+        task.failure_detail = None
+        self._persist_task(task)
+        await self._notify_progress(task)
+
+    def _should_retry_with_fresh_link(self, task: DownloadTask, error: Exception) -> bool:
+        if not self._has_link_resolver_metadata(task):
+            return False
+        if _is_kwik_session_rejected_message(str(error)):
+            return False
+        reason, _detail = classify_failure(error)
+        return reason in {"link_expired", "network"} and task.retry_count < task.max_retries
+
+    async def _queue_retry(
+        self,
+        task: DownloadTask,
+        error: Exception,
+        *,
+        backoff: int,
+        fresh_link: bool,
+        partial_path: Optional[str] = None,
+    ) -> None:
+        task.retry_count += 1
+        self._metrics["downloads_retried"] += 1
+        failure_reason, failure_detail = classify_failure(error)
+        task.status = "pending"
+        task.error = f"Retry {task.retry_count}/{task.max_retries} in {backoff}s: {error}"
+        task.failure_reason = failure_reason
+        task.failure_detail = failure_detail
+        task.speed = 0.0
+        task.terminal = False
+        if fresh_link:
+            task.url = ""
+            task.progress = 0.0
+            task.downloaded_bytes = 0
+            task.total_bytes = 0
+            if partial_path and os.path.exists(partial_path):
+                try:
+                    os.remove(partial_path)
+                except OSError:
+                    pass
+        logger.info(
+            "Retrying %s (attempt %d/%d in %ss): %s",
+            task.filename, task.retry_count, task.max_retries, backoff, error,
+        )
+        self._persist_task(task)
+        await self._notify_progress(task)
+        await asyncio.sleep(backoff)
+        if self._running and not self._shutdown_requested:
+            await self.queue.put(task)
 
     async def _download_file(self, task: DownloadTask) -> None:
         """Download a single file with progress tracking, resume, and integrity checks."""
@@ -752,6 +938,7 @@ class DownloadManager:
         lock_path = None
 
         try:
+            await self._resolve_task_link(task)
             filepath, partial_path, lock_path = self._build_file_paths(task)
             self._acquire_lock(task, lock_path)
 
@@ -925,29 +1112,26 @@ class DownloadManager:
             raise
 
         except Exception as e:
-            if _is_retryable(e) and task.retry_count < task.max_retries:
-                task.retry_count += 1
-                self._metrics["downloads_retried"] += 1
+            if self._should_retry_with_fresh_link(task, e):
                 backoff = min(
                     MAX_RETRY_BACKOFF_SECONDS,
-                    BASE_RETRY_BACKOFF_SECONDS * (2 ** (task.retry_count - 1)),
+                    BASE_RETRY_BACKOFF_SECONDS * (2 ** task.retry_count),
                 )
-                failure_reason, failure_detail = classify_failure(e)
-                task.status = "pending"
-                task.error = f"Retry {task.retry_count}/{task.max_retries} in {backoff}s: {e}"
-                task.failure_reason = failure_reason
-                task.failure_detail = failure_detail
-                task.speed = 0.0
-                task.terminal = False
-                logger.info(
-                    "Retrying %s (attempt %d/%d in %ss): %s",
-                    task.filename, task.retry_count, task.max_retries, backoff, e,
+                await self._queue_retry(
+                    task,
+                    e,
+                    backoff=backoff,
+                    fresh_link=True,
+                    partial_path=partial_path,
                 )
-                self._persist_task(task)
-                await self._notify_progress(task)
-                await asyncio.sleep(backoff)
-                if self._running and not self._shutdown_requested:
-                    await self.queue.put(task)
+                return
+
+            if _is_retryable(e) and task.retry_count < task.max_retries:
+                backoff = min(
+                    MAX_RETRY_BACKOFF_SECONDS,
+                    BASE_RETRY_BACKOFF_SECONDS * (2 ** task.retry_count),
+                )
+                await self._queue_retry(task, e, backoff=backoff, fresh_link=False)
                 return
 
             failure_reason, failure_detail = classify_failure(e)
@@ -1102,6 +1286,7 @@ class DownloadManager:
             anime_title=task.anime_title,
             anime_session=task.anime_session,
             episode_session=task.episode_session,
+            download_options=task.download_options,
             episode=task.episode,
             resolution=task.resolution,
         )
@@ -1259,6 +1444,7 @@ class DownloadManager:
                 anime_title=task.anime_title,
                 anime_session=task.anime_session,
                 episode_session=task.episode_session,
+                download_options=task.download_options,
                 episode=task.episode,
                 resolution=task.resolution,
             )

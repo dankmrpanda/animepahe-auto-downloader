@@ -18,5 +18,6 @@ def test_retryability_matches_transport_and_status() -> None:
 
 def test_message_classification_fallbacks() -> None:
     assert classify_failure("kwik forbidden")[0] == "link_expired"
+    assert classify_failure("HTTP 429 too many requests")[0] == "network"
     assert classify_failure("no space left on device")[0] == "disk_full"
     assert classify_failure("connection reset by peer")[0] == "network"

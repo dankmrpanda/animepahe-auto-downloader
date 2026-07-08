@@ -15,6 +15,7 @@ class FakeAnimePaheClient:
     def __init__(self, *, fail_direct: bool = False):
         self.base_url = "https://animepahe.test"
         self.fail_direct = fail_direct
+        self.direct_calls: list[str] = []
         self.episodes = [
             SimpleNamespace(episode=2.0, session="ep-2", title="Two"),
             SimpleNamespace(episode=1.0, session="ep-1", title="One"),
@@ -34,6 +35,7 @@ class FakeAnimePaheClient:
         ]
 
     async def get_direct_download_link(self, pahe_link: str) -> str:
+        self.direct_calls.append(pahe_link)
         if self.fail_direct:
             raise RuntimeError("Kwik still returned HTTP 403")
         return f"https://cdn.example/{pahe_link.rsplit('/', 1)[-1]}.mp4"
@@ -46,6 +48,9 @@ class FakeDownloadManager:
 
     def add_progress_callback(self, callback) -> None:
         self.callback = callback
+
+    def set_link_resolver(self, resolver) -> None:
+        self.resolver = resolver
 
     async def add_task(self, **kwargs):
         self.added.append(kwargs)
@@ -73,7 +78,8 @@ async def wait_for(predicate) -> None:
 @pytest.mark.asyncio
 async def test_download_route_enqueues_in_episode_order() -> None:
     manager = FakeDownloadManager()
-    app = make_app(FakeAnimePaheClient(), manager)
+    animepahe_client = FakeAnimePaheClient(fail_direct=True)
+    app = make_app(animepahe_client, manager)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -91,6 +97,8 @@ async def test_download_route_enqueues_in_episode_order() -> None:
     await wait_for(lambda: len(manager.added) == 2)
     assert [item["episode"] for item in manager.added] == [1.0, 2.0]
     assert [item["episode_session"] for item in manager.added] == ["ep-1", "ep-2"]
+    assert [item["url"] for item in manager.added] == ["", ""]
+    assert animepahe_client.direct_calls == []
 
 
 @pytest.mark.asyncio
@@ -137,12 +145,17 @@ async def test_manual_import_route_enqueues_in_episode_order() -> None:
     assert response.status_code == 200
     await wait_for(lambda: len(manager.added) == 2)
     assert [item["episode"] for item in manager.added] == [1.0, 2.0]
+    assert [item["url"] for item in manager.added] == ["", ""]
+    assert [item["download_options"][0].pahe_link for item in manager.added] == [
+        "https://pahe.win/e1",
+        "https://pahe.win/e2",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_kwik_403_broadcasts_link_expired(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_manual_import_missing_options_broadcasts_error(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = FakeDownloadManager()
-    app = make_app(FakeAnimePaheClient(fail_direct=True), manager)
+    app = make_app(FakeAnimePaheClient(), manager)
     transport = httpx.ASGITransport(app=app)
     broadcasts: list[tuple[str, str]] = []
 
@@ -153,17 +166,25 @@ async def test_kwik_403_broadcasts_link_expired(monkeypatch: pytest.MonkeyPatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
-            "/api/download",
+            "/api/download/manual-import",
             json={
                 "anime_session": "anime-1",
                 "anime_title": "Example",
-                "episodes": ["ep-1"],
                 "resolution": 720,
+                "episodes": [
+                    {
+                        "episode": 1,
+                        "session": "ep-1",
+                        "anime_session": "anime-1",
+                        "options": [],
+                    }
+                ],
             },
         )
 
     assert response.status_code == 200
     await wait_for(lambda: bool(broadcasts))
-    assert "link_expired" in broadcasts[0][0]
+    assert "No episodes queued" in broadcasts[0][0]
+    assert "No imported pahe.win options found" in broadcasts[0][0]
     assert broadcasts[0][1] == "Example"
     assert manager.added == []

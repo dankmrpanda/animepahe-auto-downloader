@@ -54,3 +54,19 @@ async def test_clearance_provider_serializes_concurrent_mints(tmp_path) -> None:
 
     assert first["cf_clearance"] == second["cf_clearance"] == "shared-clearance"
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_clearance_provider_reuses_pahe_win_family(tmp_path) -> None:
+    async def fake_minter(url: str, host: str) -> dict:
+        return {
+            "cf_clearance": "pahe-clearance",
+            "user_agent": "Mozilla/5.0 Chrome/141.0.0.0",
+            "host": host,
+        }
+
+    provider = ClearanceProvider(tmp_path / "clearance.json", minter=fake_minter)
+
+    await provider.mint("https://pahe.win/e/example", "pahe.win")
+
+    assert provider.get_compatible("www.pahe.win")["cf_clearance"] == "pahe-clearance"

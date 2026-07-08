@@ -64,6 +64,8 @@ def compatible_hosts(host: str) -> set[str]:
         hosts.add("animepahe")
     if host.startswith("kwik."):
         hosts.add("kwik")
+    if host == "pahe.win" or host.endswith(".pahe.win"):
+        hosts.add("pahe")
     return hosts
 
 
@@ -207,14 +209,10 @@ class ClearanceProvider:
         if exact:
             return exact
         host = normalize_host(host)
-        if host.startswith("animepahe."):
-            for stored_host, pair in self._state.items():
-                if stored_host.startswith("animepahe.") and pair.get("cf_clearance"):
-                    return dict(pair)
-        if host.startswith("kwik."):
-            for stored_host, pair in self._state.items():
-                if stored_host.startswith("kwik.") and pair.get("cf_clearance"):
-                    return dict(pair)
+        target_hosts = compatible_hosts(host)
+        for stored_host, pair in self._state.items():
+            if compatible_hosts(stored_host) & target_hosts and pair.get("cf_clearance"):
+                return dict(pair)
         return None
 
     def items(self) -> list[tuple[str, dict[str, Any]]]:

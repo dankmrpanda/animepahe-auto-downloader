@@ -6,6 +6,7 @@ Ported from main.py with async support and improved error handling
 import re
 import logging
 import os
+import random
 from typing import Optional
 import asyncio
 import time
@@ -46,6 +47,42 @@ class KwikPahe:
         self.clearance_provider = clearance_provider
         self._cookie_clients_loaded: set[int] = set()
         self._cookie_load_summaries: dict[int, dict[str, object]] = {}
+        self._resolve_semaphore = asyncio.Semaphore(self._env_int("ANIMEPAHE_RESOLVE_CONCURRENCY", 1, 1, 4))
+        self._resolve_delay_seconds = self._env_int("ANIMEPAHE_RESOLVE_DELAY_MS", 750, 0, 10000) / 1000
+        self._resolve_pace_lock = asyncio.Lock()
+        self._last_resolve_hit = 0.0
+
+    @staticmethod
+    def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(os.environ.get(name) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    async def _pace_resolve(self) -> None:
+        if self._resolve_delay_seconds <= 0:
+            return
+        async with self._resolve_pace_lock:
+            now = time.monotonic()
+            wait_seconds = (self._last_resolve_hit + self._resolve_delay_seconds) - now
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds + random.uniform(0, 0.25))
+            self._last_resolve_hit = time.monotonic()
+
+    @staticmethod
+    def _retry_after_seconds(headers) -> float | None:
+        value = ""
+        try:
+            value = str(headers.get("retry-after") or "").strip()
+        except Exception:
+            value = ""
+        if not value:
+            return None
+        try:
+            return max(0.0, min(120.0, float(value)))
+        except ValueError:
+            return None
     
     def _base_convert(self, input_str: str, from_base: int, to_base: int) -> int:
         """
@@ -280,9 +317,10 @@ class KwikPahe:
         last_error: str | None = None
         last_status: int | None = None
         last_response = None
-        non_retryable_statuses = {401, 403, 404, 410}
+        non_retryable_statuses = {401, 404, 410}
         
         for attempt in range(retries):
+            sleep_seconds: float | None = None
             try:
                 if method == "GET":
                     kwargs.setdefault("allow_redirects", True)
@@ -327,6 +365,15 @@ class KwikPahe:
                         _clearance_refreshed=True,
                         **kwargs,
                     )
+                if response.status_code in {403, 429}:
+                    retry_after = self._retry_after_seconds(response.headers)
+                    sleep_seconds = retry_after if retry_after is not None else min(30.0, 2.0 ** attempt)
+                    logger.warning(
+                        "Kwik/pahe fetch returned HTTP %s for %s; backing off %.1fs before retry",
+                        response.status_code,
+                        urlparse(url).netloc,
+                        sleep_seconds,
+                    )
                 if response.status_code in non_retryable_statuses:
                     break
             except KwikDecodeError:
@@ -336,7 +383,7 @@ class KwikPahe:
             
             # Exponential backoff
             if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(sleep_seconds if sleep_seconds is not None else 2 ** attempt)
         
         if last_response is not None and self._looks_like_cf_challenge(last_response):
             raise KwikDecodeError(
@@ -507,6 +554,16 @@ class KwikPahe:
             raise KwikDecodeError(f"Failed to decode Kwik page: {e}")
     
     async def extract_download_link(
+        self,
+        client: AsyncSession,
+        pahe_embed_url: str,
+        referer: Optional[str] = None,
+    ) -> str:
+        async with self._resolve_semaphore:
+            await self._pace_resolve()
+            return await self._extract_download_link_unpaced(client, pahe_embed_url, referer=referer)
+
+    async def _extract_download_link_unpaced(
         self, 
         client: AsyncSession,
         pahe_embed_url: str,
