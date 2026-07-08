@@ -31,6 +31,7 @@ def _load_runtime_files() -> dict[str, object]:
         "env_legacy_curl_impersonate_repr": repr(os.environ.get("CURL_IMPERSONATE")),
         "env_app_curl_impersonate_repr": repr(os.environ.get("ANIMEPAHE_CURL_IMPERSONATE")),
         "env_animepahe_user_agent_length_before_file": len(os.environ.get("ANIMEPAHE_USER_AGENT") or ""),
+        "env_animepahe_cookie_file_repr": repr(os.environ.get("ANIMEPAHE_COOKIE_FILE")),
         "env_kwik_cookie_file_repr": repr(os.environ.get("KWIK_COOKIE_FILE")),
     }
 
@@ -47,6 +48,7 @@ def _load_runtime_files() -> dict[str, object]:
         )
 
     if cookie_path.exists():
+        os.environ["ANIMEPAHE_COOKIE_FILE"] = str(cookie_path)
         os.environ["KWIK_COOKIE_FILE"] = str(cookie_path)
         rows = [
             line
@@ -64,6 +66,9 @@ def _load_runtime_files() -> dict[str, object]:
             {
                 "cookie_rows": len(rows),
                 "cookie_domains": dict(domains.most_common()),
+                "animepahe_cookie_rows": sum(
+                    count for domain, count in domains.items() if domain.startswith("animepahe.")
+                ),
                 "kwik_cookie_rows": sum(count for domain, count in domains.items() if domain.startswith("kwik.")),
                 "has_cf_clearance": "cf_clearance" in names,
                 "has_kwik_session": "kwik_session" in names,
@@ -112,6 +117,8 @@ async def main() -> int:
 
     app_client = AnimePaheClient()
     async with make_async_session(timeout=15.0) as session:
+        app_client._load_cookie_file(session)
+        print("animepahe_cookie_load_summary:", app_client._cookie_load_summaries.get(id(session), {}))
         for candidate in CANDIDATE_DOMAINS:
             raw_url = f"{candidate}/api?m=search&l=1&q={quote('naruto')}"
             headers = app_client._get_headers(candidate + "/")

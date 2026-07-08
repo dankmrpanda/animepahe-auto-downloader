@@ -7,9 +7,14 @@ echo Starting AnimePahe Web Downloader...
 REM Refresh host/session-related environment variables on every launch.
 REM cookies.txt is expected next to this batch file and is ignored by git.
 set "KWIK_COOKIE_FILE=%~dp0cookies.txt"
+set "ANIMEPAHE_COOKIE_FILE=%~dp0cookies.txt"
+set "ANIMEPAHE_CLEARANCE_MODE=browser"
+set "ANIMEPAHE_BROWSER=seleniumbase"
+set "ANIMEPAHE_BROWSER_HEADLESS=false"
+set "ANIMEPAHE_CLEARANCE_STORE=%~dp0clearance.json"
 set "ANIMEPAHE_CURL_IMPERSONATE=chrome"
 REM Optional: pin a domain (otherwise auto-detected).
-REM set "ANIMEPAHE_BASE_URL=https://animepahe.com"
+REM set "ANIMEPAHE_BASE_URL=https://animepahe.pw"
 REM Only set a UA if you also export matching cookies.txt (advanced).
 if exist "%~dp0user-agent.txt" (
     set /p BROWSER_USER_AGENT=<"%~dp0user-agent.txt"
@@ -19,10 +24,11 @@ if exist "%~dp0user-agent.txt" (
 )
 
 if exist "%KWIK_COOKIE_FILE%" (
-    echo Using Kwik cookie file: %KWIK_COOKIE_FILE%
+    echo Using cookie fallback file: %KWIK_COOKIE_FILE%
 ) else (
-    echo Optional Kwik cookie fallback not found: %KWIK_COOKIE_FILE%
+    echo Optional cookie fallback not found: %KWIK_COOKIE_FILE%
 )
+echo Cloudflare clearance mode: %ANIMEPAHE_CLEARANCE_MODE%
 
 where uv > nul 2> nul
 if errorlevel 1 (

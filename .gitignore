@@ -5,6 +5,7 @@
 # -------------------------------
 cookies.txt
 user-agent.txt
+clearance.json
 # Python virtual environments
 env/
 venv/

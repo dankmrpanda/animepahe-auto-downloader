@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
+from core.clearance import cookie_file_summary, default_store_path, normalize_clearance_mode
 from core.http_client import IMPERSONATE_TARGET, make_async_session
 
 
@@ -103,6 +104,8 @@ async def run_environment_checks(
     animepahe_base_url: str | None = None,
 ) -> dict[str, Any]:
     test_url = animepahe_base_url or "https://animepahe.com"
+    anime_cookie = cookie_file_summary(os.environ.get("ANIMEPAHE_COOKIE_FILE"), ("animepahe.",))
+    kwik_cookie = cookie_file_summary(os.environ.get("KWIK_COOKIE_FILE"), ("kwik.",))
     checks: dict[str, Any] = {
         "path_exists": _check_download_path_exists(download_path),
         "path_writable": _check_download_path_writable(download_path),
@@ -114,6 +117,13 @@ async def run_environment_checks(
         "ok": all(item.get("ok", False) for item in checks.values()),
         "animepahe_base_url": test_url.rstrip("/"),
         "curl_impersonate": IMPERSONATE_TARGET,
+        "clearance_mode": normalize_clearance_mode(),
+        "clearance_store": str(default_store_path()),
+        "animepahe_cookie_rows": anime_cookie["rows"],
+        "animepahe_has_cf_clearance": anime_cookie["has_cf_clearance"],
+        "kwik_cookie_rows": kwik_cookie["rows"],
+        "kwik_has_cf_clearance": kwik_cookie["has_cf_clearance"],
+        "kwik_has_kwik_session": kwik_cookie["has_kwik_session"],
         "checks": checks,
     }
 
@@ -173,5 +183,6 @@ def build_health_payload(
         "queue": queue_status,
         "animepahe_base_url": (startup_checks or {}).get("animepahe_base_url"),
         "curl_impersonate": (startup_checks or {}).get("curl_impersonate", IMPERSONATE_TARGET),
+        "clearance_mode": (startup_checks or {}).get("clearance_mode", normalize_clearance_mode()),
         "startup_checks": startup_checks or {},
     }

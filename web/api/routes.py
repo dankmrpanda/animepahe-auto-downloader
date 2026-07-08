@@ -716,11 +716,17 @@ async def get_diagnostics(request: Request):
         animepahe_client.base_url if animepahe_client else None,
     )
     recent_errors = collect_recent_errors(download_manager.failed_tasks, limit=20)
+    clearance = (
+        animepahe_client.get_clearance_status()
+        if animepahe_client and hasattr(animepahe_client, "get_clearance_status")
+        else {}
+    )
 
     return {
         "health": health,
         "metrics": download_manager.get_metrics(),
         "environment_checks": environment_checks,
+        "clearance": clearance,
         "recent_errors": recent_errors,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

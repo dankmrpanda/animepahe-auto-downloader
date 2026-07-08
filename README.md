@@ -58,32 +58,44 @@ run_web.bat
 ## Host Access Notes
 The backend uses `curl_cffi` with Chrome impersonation for AnimePahe, pahe.win,
 Kwik, and CDN requests. This avoids the plain Python TLS fingerprint that caused
-many Cloudflare/DDoS-Guard 403 responses. Cookies are no longer required for the
-normal path.
+many Cloudflare/DDoS-Guard 403 responses. AnimePahe now may also require a
+Cloudflare `cf_clearance` cookie minted by a real browser. The default Windows
+startup path uses browser clearance mode: a headed Chrome window briefly opens
+off-screen when clearance must be refreshed, then `curl_cffi` replays the cookie
+for the fast requests.
 
 AnimePahe defaults to `https://animepahe.com` and auto-detects the first
 reachable mirror from the known domain list at startup. Pin a host only when you
 need to override detection:
 
 ```powershell
-$env:ANIMEPAHE_BASE_URL="https://animepahe.com"
+$env:ANIMEPAHE_BASE_URL="https://animepahe.pw"
 ```
 
 `run_web.bat` also sets:
 
 ```powershell
+$env:ANIMEPAHE_CLEARANCE_MODE="browser"
+$env:ANIMEPAHE_BROWSER="seleniumbase"
+$env:ANIMEPAHE_CLEARANCE_STORE="<repo>\clearance.json"
 $env:ANIMEPAHE_CURL_IMPERSONATE="chrome"
+$env:ANIMEPAHE_COOKIE_FILE="<repo>\cookies.txt"
 $env:KWIK_COOKIE_FILE="<repo>\cookies.txt"
 ```
 
-`cookies.txt`, `user-agent.txt`, and Manual Import are fallback tools for rare
-periods where the host rejects even Chrome impersonation.
+`cookies.txt`, `user-agent.txt`, and Manual Import remain fallback tools for
+machines where Chrome automation is unavailable or the host rejects the automated
+refresh.
 
-To create or refresh the optional Kwik fallback files:
+`ANIMEPAHE_BROWSER=seleniumbase` is the default because it imports cleanly in
+the local Python environment. The code still supports `ANIMEPAHE_BROWSER=nodriver`
+if you install a working nodriver build yourself.
+
+To create or refresh the optional manual fallback files:
 
 1. Open the same browser you normally use for AnimePahe/Kwik on the same internet connection where this app is running. Do not use a VPN/proxy in one place and not the other.
 2. In the browser, open an AnimePahe episode and continue through to the Kwik download page until the Kwik page loads successfully.
-3. Export cookies for `kwik.cx` in Netscape / cookies.txt format. A browser extension such as `Get cookies.txt LOCALLY` can do this; export only the current `kwik.cx` cookies if the extension lets you filter by domain.
+3. Export cookies for `animepahe.*` and `kwik.cx` in Netscape / cookies.txt format. A browser extension such as `Get cookies.txt LOCALLY` can do this; export only the current AnimePahe and Kwik cookies if the extension lets you filter by domain.
 4. Save the exported file as `cookies.txt` in the repository root, next to `run_web.bat`.
 5. Copy the exact user-agent from that same browser session and save it as a single line in `user-agent.txt`, also next to `run_web.bat`. In Chrome or Edge, open DevTools Console and run `navigator.userAgent`.
 6. Restart the app with `run_web.bat`, then retry the failed queue item or manual import.
@@ -115,7 +127,7 @@ If you still get HTTP 403 after refreshing `cookies.txt`, check these common cau
 
 - If the log says `Loaded 6 Kwik cookies` and then every `https://kwik.cx/f/...` request is still `403 Forbidden`, the app is reading the file correctly. Kwik/Cloudflare rejected curl_cffi impersonation and the exported browser session.
 - The file is not Netscape format. It should contain tab-separated cookie rows, not CSV columns.
-- The file does not contain current `kwik.cx` cookie rows.
+- The file does not contain current `animepahe.*` or `kwik.cx` cookie rows.
 - The `user-agent.txt` value does not exactly match the browser session that produced `cf_clearance`; Cloudflare can reject otherwise valid cookies when the user-agent changes.
 - The browser session used for export is on a different VPN, proxy, network, or public IP than the app.
 - The app was already running when you replaced `cookies.txt`; stop and restart it so the backend loads the new file.

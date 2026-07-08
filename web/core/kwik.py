@@ -8,11 +8,14 @@ import logging
 import os
 from typing import Optional
 import asyncio
+import time
 from http.cookiejar import LoadError, MozillaCookieJar
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from curl_cffi.requests import AsyncSession
+
+from core.clearance import ClearanceError, ClearanceProvider, host_from_url, looks_like_cf_challenge, normalize_host
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +35,7 @@ class KwikDecodeError(Exception):
 class KwikPahe:
     """Handles extraction and decoding of Kwik video player links"""
     
-    def __init__(self):
+    def __init__(self, clearance_provider: ClearanceProvider | None = None):
         self.base_alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
         self.timeout = 30.0
         self.user_agent = (
@@ -40,6 +43,7 @@ class KwikPahe:
             or os.environ.get("ANIMEPAHE_USER_AGENT")
         )
         self.cookie_file = os.environ.get("KWIK_COOKIE_FILE")
+        self.clearance_provider = clearance_provider
         self._cookie_clients_loaded: set[int] = set()
         self._cookie_load_summaries: dict[int, dict[str, object]] = {}
     
@@ -216,6 +220,50 @@ class KwikPahe:
             logger.warning("Could not load KWIK_COOKIE_FILE=%s: %s", path, exc)
         finally:
             self._cookie_clients_loaded.add(client_id)
+
+    def set_clearance(
+        self,
+        cf_clearance: str,
+        user_agent: str,
+        host: str,
+        client: AsyncSession | None = None,
+    ) -> None:
+        host = normalize_host(host)
+        if not cf_clearance or not host:
+            return
+        if user_agent:
+            self.user_agent = user_agent
+        if client is not None:
+            try:
+                client.cookies.set("cf_clearance", cf_clearance, domain=host, path="/")
+            except Exception:
+                logger.debug("Could not inject Kwik clearance for %s", host)
+
+    def _inject_cached_clearance(self, client: AsyncSession, url: str) -> None:
+        if not self.clearance_provider:
+            return
+        host = host_from_url(url)
+        pair = self.clearance_provider.get_compatible(host)
+        if not pair:
+            return
+        self.set_clearance(
+            str(pair["cf_clearance"]),
+            str(pair["user_agent"]),
+            str(pair.get("host") or host),
+            client,
+        )
+
+    def _looks_like_cf_challenge(self, response) -> bool:
+        return looks_like_cf_challenge(
+            int(getattr(response, "status_code", 0) or 0),
+            getattr(response, "headers", {}),
+            getattr(response, "text", ""),
+        )
+
+    def _refresh_headers_user_agent(self, kwargs: dict) -> None:
+        headers = kwargs.get("headers")
+        if isinstance(headers, dict) and self.user_agent:
+            headers["user-agent"] = self.user_agent
     
     async def _fetch_with_retry(
         self, 
@@ -223,11 +271,15 @@ class KwikPahe:
         url: str, 
         method: str = "GET",
         retries: int = 3,
+        _clearance_refreshed: bool = False,
         **kwargs
     ):
         """Fetch URL with exponential backoff retry"""
+        self._inject_cached_clearance(client, url)
+        self._refresh_headers_user_agent(kwargs)
         last_error: str | None = None
         last_status: int | None = None
+        last_response = None
         non_retryable_statuses = {401, 403, 404, 410}
         
         for attempt in range(retries):
@@ -243,8 +295,42 @@ class KwikPahe:
 
                 last_error = f"HTTP {response.status_code}"
                 last_status = response.status_code
+                last_response = response
+                if (
+                    self._looks_like_cf_challenge(response)
+                    and self.clearance_provider
+                    and not _clearance_refreshed
+                ):
+                    host = host_from_url(str(response.url) if getattr(response, "url", None) else url)
+                    challenged_at = time.time()
+                    try:
+                        pair = await self.clearance_provider.mint(
+                            str(response.url) if getattr(response, "url", None) else url,
+                            host,
+                            force=True,
+                            stale_before=challenged_at,
+                        )
+                    except ClearanceError as exc:
+                        raise KwikDecodeError(str(exc)) from exc
+                    self.set_clearance(
+                        str(pair["cf_clearance"]),
+                        str(pair["user_agent"]),
+                        str(pair.get("host") or host),
+                        client,
+                    )
+                    self._refresh_headers_user_agent(kwargs)
+                    return await self._fetch_with_retry(
+                        client,
+                        url,
+                        method=method,
+                        retries=1,
+                        _clearance_refreshed=True,
+                        **kwargs,
+                    )
                 if response.status_code in non_retryable_statuses:
                     break
+            except KwikDecodeError:
+                raise
             except Exception as e:
                 last_error = str(e)
             
@@ -252,6 +338,13 @@ class KwikPahe:
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
         
+        if last_response is not None and self._looks_like_cf_challenge(last_response):
+            raise KwikDecodeError(
+                "Kwik returned a Cloudflare challenge. Refresh cookies.txt/user-agent.txt "
+                "from a browser session on the same IP or use ANIMEPAHE_CLEARANCE_MODE=browser "
+                "for automated clearance refresh."
+            )
+
         if last_status == 403 and urlparse(url).netloc.endswith("kwik.cx"):
             if self.cookie_file:
                 summary = self._cookie_load_summaries.get(id(client), {})

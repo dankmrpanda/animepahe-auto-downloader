@@ -9,12 +9,23 @@ import asyncio
 import logging
 import os
 import html
+from http.cookiejar import LoadError, MozillaCookieJar
+from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 from typing import Optional
 from dataclasses import dataclass
 
 from curl_cffi.requests import AsyncSession
 
+from core.clearance import (
+    ClearanceError,
+    ClearanceProvider,
+    cookie_file_summary,
+    host_from_url,
+    looks_like_cf_challenge,
+    normalize_clearance_mode,
+    normalize_host,
+)
 from core.http_client import make_async_session
 from core.kwik import KwikPahe, KwikDecodeError
 
@@ -136,11 +147,21 @@ class AnimePaheClient:
     """Async client for AnimePahe website"""
 
     def __init__(self):
-        self.kwik = KwikPahe()
         self.base_url = DEFAULT_BASE_URL
         self._base_url_locked = bool(os.environ.get("ANIMEPAHE_BASE_URL"))
         self._base_url_resolved = False
         self.timeout = 30.0
+        self.user_agent = os.environ.get("ANIMEPAHE_USER_AGENT")
+        self.cookie_file = os.environ.get("ANIMEPAHE_COOKIE_FILE")
+        self.clearance_mode = normalize_clearance_mode()
+        self.clearance_provider = (
+            ClearanceProvider()
+            if self.clearance_mode == "browser"
+            else None
+        )
+        self.kwik = KwikPahe(clearance_provider=self.clearance_provider)
+        self._cookie_clients_loaded: set[int] = set()
+        self._cookie_load_summaries: dict[int, dict[str, object]] = {}
         self._session_ready = False
         self._session_lock = asyncio.Lock()
         self._client: Optional[AsyncSession] = None
@@ -160,14 +181,190 @@ class AnimePaheClient:
             "accept": "application/json, text/javascript, */*; q=0.01",
             "accept-language": "en-US,en;q=0.9",
             "x-requested-with": "XMLHttpRequest",
-            "cookie": "__ddg2_=",
         }
-        user_agent = os.environ.get("ANIMEPAHE_USER_AGENT")
-        if user_agent:
-            headers["user-agent"] = user_agent
+        if self.user_agent:
+            headers["user-agent"] = self.user_agent
         if referer:
             headers["referer"] = referer
         return headers
+
+    def _load_cookie_file(self, client: AsyncSession) -> None:
+        """
+        Load user-provided Netscape cookies for AnimePahe.
+
+        This intentionally reads only ANIMEPAHE_COOKIE_FILE; browser profile
+        databases are not inspected.
+        """
+        client_id = id(client)
+        if not self.cookie_file or client_id in self._cookie_clients_loaded:
+            return
+
+        path = Path(self.cookie_file).expanduser()
+        try:
+            jar = MozillaCookieJar(str(path))
+            jar.load(ignore_discard=True, ignore_expires=True)
+            loaded = 0
+            names: set[str] = set()
+            for cookie in jar:
+                domain = (cookie.domain or "").lstrip(".").lower()
+                if not domain.startswith("animepahe."):
+                    continue
+                try:
+                    client.cookies.set(
+                        cookie.name,
+                        cookie.value,
+                        domain=cookie.domain,
+                        path=cookie.path or "/",
+                    )
+                except Exception:
+                    continue
+                loaded += 1
+                names.add(cookie.name)
+            self._cookie_load_summaries[client_id] = {
+                "count": loaded,
+                "has_cf_clearance": "cf_clearance" in names,
+            }
+            if loaded:
+                logger.info("Loaded %d AnimePahe cookies from %s", loaded, path)
+            else:
+                logger.warning("No AnimePahe cookies found in %s", path)
+        except (FileNotFoundError, LoadError, OSError) as exc:
+            self._cookie_load_summaries[client_id] = {
+                "count": 0,
+                "has_cf_clearance": False,
+            }
+            logger.warning("Could not load ANIMEPAHE_COOKIE_FILE=%s: %s", path, exc)
+        finally:
+            self._cookie_clients_loaded.add(client_id)
+
+    def set_clearance(self, cf_clearance: str, user_agent: str, host: str) -> None:
+        host = normalize_host(host)
+        if not cf_clearance or not host:
+            return
+        if user_agent:
+            self.user_agent = user_agent
+            self.kwik.user_agent = user_agent
+        if self._client is not None and not self._client_closed:
+            try:
+                self._client.cookies.set("cf_clearance", cf_clearance, domain=host, path="/")
+            except Exception:
+                logger.debug("Could not inject AnimePahe clearance for %s", host)
+
+    def _inject_cached_clearance(self, client: AsyncSession) -> None:
+        if not self.clearance_provider:
+            return
+        for host, pair in self.clearance_provider.items():
+            if pair.get("cf_clearance"):
+                try:
+                    client.cookies.set(
+                        "cf_clearance",
+                        str(pair["cf_clearance"]),
+                        domain=host,
+                        path="/",
+                    )
+                except Exception:
+                    logger.debug("Could not inject cached clearance for %s", host)
+                if pair.get("user_agent"):
+                    self.user_agent = str(pair["user_agent"])
+                    self.kwik.user_agent = self.user_agent
+
+    def _looks_like_cf_challenge(self, response) -> bool:
+        return looks_like_cf_challenge(
+            int(getattr(response, "status_code", 0) or 0),
+            getattr(response, "headers", {}),
+            getattr(response, "text", ""),
+        )
+
+    def _clearance_error_message(self, host: str) -> str:
+        if self.clearance_mode == "cookie":
+            return (
+                f"AnimePahe returned a Cloudflare challenge for {host}. Refresh "
+                "ANIMEPAHE_COOKIE_FILE/cookies.txt from a browser session on the same IP, "
+                "make sure user-agent.txt matches that browser, then restart the app."
+            )
+        if self.clearance_mode == "off":
+            return (
+                f"AnimePahe returned a Cloudflare challenge for {host}. Set "
+                "ANIMEPAHE_CLEARANCE_MODE=browser for automated refresh or cookie for "
+                "manual cf_clearance replay."
+            )
+        return f"AnimePahe returned a Cloudflare challenge for {host}."
+
+    async def _get_response(
+        self,
+        url: str,
+        *,
+        referer: Optional[str] = None,
+        allow_redirects: bool = True,
+    ):
+        client = await self._get_client()
+        response = await client.get(
+            url,
+            headers=self._get_headers(referer),
+            allow_redirects=allow_redirects,
+        )
+        if not self._looks_like_cf_challenge(response):
+            self._learn_base_url_from_response(response)
+            return response
+
+        host = host_from_url(str(getattr(response, "url", None) or url))
+        if self.clearance_mode != "browser" or not self.clearance_provider:
+            raise AnimePaheError(self._clearance_error_message(host))
+
+        challenged_at = time.time()
+        try:
+            pair = await self.clearance_provider.mint(
+                str(getattr(response, "url", None) or url),
+                host,
+                force=True,
+                stale_before=challenged_at,
+            )
+        except ClearanceError as exc:
+            raise AnimePaheError(str(exc)) from exc
+
+        self.set_clearance(
+            str(pair["cf_clearance"]),
+            str(pair["user_agent"]),
+            str(pair.get("host") or host),
+        )
+        response = await client.get(
+            url,
+            headers=self._get_headers(referer),
+            allow_redirects=allow_redirects,
+        )
+        if self._looks_like_cf_challenge(response):
+            raise AnimePaheError(
+                "AnimePahe still returned a Cloudflare challenge after automated "
+                "clearance refresh. Confirm Chrome can open the page on this same IP "
+                "and try again, or use Manual Import as a fallback."
+            )
+        self._learn_base_url_from_response(response)
+        return response
+
+    def _learn_base_url_from_response(self, response) -> None:
+        try:
+            parsed = urlparse(str(response.url))
+        except Exception:
+            return
+        if parsed.scheme and parsed.netloc and parsed.netloc.startswith("animepahe."):
+            self.base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    def get_clearance_status(self) -> dict[str, object]:
+        anime_cookie = cookie_file_summary(self.cookie_file, ("animepahe.",))
+        kwik_cookie = cookie_file_summary(os.environ.get("KWIK_COOKIE_FILE"), ("kwik.",))
+        status: dict[str, object] = {
+            "clearance_mode": self.clearance_mode,
+            "animepahe_cookie_rows": anime_cookie["rows"],
+            "animepahe_has_cf_clearance": anime_cookie["has_cf_clearance"],
+            "kwik_cookie_rows": kwik_cookie["rows"],
+            "kwik_has_cf_clearance": kwik_cookie["has_cf_clearance"],
+            "kwik_has_kwik_session": kwik_cookie["has_kwik_session"],
+            "base_url": self.base_url,
+        }
+        if self.clearance_provider:
+            hosts = [host_from_url(self.base_url), "kwik.cx"]
+            status.update(self.clearance_provider.status(hosts))
+        return status
 
     async def ensure_base_url(self, client: AsyncSession) -> None:
         if self._base_url_resolved or self._base_url_locked:
@@ -232,6 +429,8 @@ class AnimePaheClient:
             if self._client is None or self._client_closed:
                 self._client = make_async_session(timeout=self.timeout)
                 self._client_closed = False
+                self._load_cookie_file(self._client)
+                self._inject_cached_clearance(self._client)
                 await self.ensure_base_url(self._client)
                 await self._ensure_session(self._client)
             return self._client
@@ -305,11 +504,7 @@ class AnimePaheClient:
         search_url = f"{self.base_url}/api?m=search&l=8&q={quote(query)}"
 
         try:
-            response = await client.get(
-                search_url,
-                headers=self._get_headers(f"{self.base_url}/"),
-                allow_redirects=True
-            )
+            response = await self._get_response(search_url, referer=f"{self.base_url}/")
 
             if response.status_code != 200:
                 logger.warning("Search failed: %s", response.status_code)
@@ -353,6 +548,8 @@ class AnimePaheClient:
 
             self._search_cache.set(query.lower(), results)
             return results
+        except AnimePaheError:
+            raise
         except Exception as e:
             logger.error("Search error: %s", e)
             return []
@@ -402,11 +599,7 @@ class AnimePaheClient:
         await self._ensure_session(client)
 
         url = f"{self.base_url}/anime/{session_id}"
-        response = await client.get(
-            url,
-            headers=self._get_headers(self.base_url),
-            allow_redirects=True
-        )
+        response = await self._get_response(url, referer=self.base_url)
 
         if response.status_code != 200:
             raise AnimePaheError(f"Failed to get anime details: {response.status_code}")
@@ -437,11 +630,7 @@ class AnimePaheClient:
         api_url = f"{self.base_url}/api?m=release&id={session_id}&sort=episode_asc&page=1"
 
         async def fetch_episodes_api():
-            resp = await client.get(
-                api_url,
-                headers=self._get_headers(url),
-                allow_redirects=True
-            )
+            resp = await self._get_response(api_url, referer=url)
             if resp.status_code != 200:
                 raise AnimePaheError(f"Failed to get episode count: {resp.status_code}")
             return resp.json()
@@ -496,10 +685,9 @@ class AnimePaheClient:
 
         api_url = f"{self.base_url}/api?m=release&id={session_id}&sort=episode_asc&page={page}"
 
-        response = await client.get(
+        response = await self._get_response(
             api_url,
-            headers=self._get_headers(f"{self.base_url}/anime/{session_id}"),
-            allow_redirects=True
+            referer=f"{self.base_url}/anime/{session_id}",
         )
 
         if response.status_code != 200:
@@ -581,10 +769,9 @@ class AnimePaheClient:
 
         play_url = f"{self.base_url}/play/{anime_session}/{episode_session}"
 
-        response = await client.get(
+        response = await self._get_response(
             play_url,
-            headers=self._get_headers(f"{self.base_url}/anime/{anime_session}"),
-            allow_redirects=True
+            referer=f"{self.base_url}/anime/{anime_session}",
         )
 
         if response.status_code != 200:
