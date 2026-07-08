@@ -711,7 +711,10 @@ async def get_diagnostics(request: Request):
     startup_checks = getattr(request.app.state, "startup_checks", {})
     started_at = getattr(request.app.state, "started_at", None)
     health = build_health_payload(download_manager, startup_checks=startup_checks, started_at=started_at)
-    environment_checks = await run_environment_checks(download_manager.download_path)
+    environment_checks = await run_environment_checks(
+        download_manager.download_path,
+        animepahe_client.base_url if animepahe_client else None,
+    )
     recent_errors = collect_recent_errors(download_manager.failed_tasks, limit=20)
 
     return {

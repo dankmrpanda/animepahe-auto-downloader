@@ -18,6 +18,7 @@ from api.routes import router as api_router, init_clients
 from core.animepahe import AnimePaheClient
 from core.downloader import DownloadManager
 from core.diagnostics import run_environment_checks, build_health_payload
+from core.http_client import IMPERSONATE_TARGET
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -39,7 +40,13 @@ async def lifespan(app: FastAPI):
     app_config = load_config()
     os.makedirs(app_config.download_path, exist_ok=True)
 
-    startup_checks = await run_environment_checks(app_config.download_path)
+    await animepahe_client._get_client()
+    startup_checks = await run_environment_checks(
+        app_config.download_path,
+        animepahe_client.base_url,
+    )
+    startup_checks["animepahe_base_url"] = animepahe_client.base_url
+    startup_checks["curl_impersonate"] = IMPERSONATE_TARGET
     app_started_at = datetime.now(timezone.utc).isoformat()
     app.state.startup_checks = startup_checks
     app.state.started_at = app_started_at

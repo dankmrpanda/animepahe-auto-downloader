@@ -17,8 +17,8 @@ from datetime import datetime
 from typing import Optional, Callable, Any
 
 import aiofiles
-import httpx
 
+from core.http_client import NETWORK_EXCEPTIONS, make_async_session
 from core.paths import (
     PathSafetyError,
     normalize_download_path,
@@ -59,6 +59,14 @@ class DownloadStoppedError(Exception):
     """Raised when a user stops an in-progress download."""
 
 
+class DownloadHTTPError(Exception):
+    """HTTP status error decoupled from the transport library."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        self.status_code = status_code
+        super().__init__(message or f"HTTP {status_code}")
+
+
 class FileLockError(Exception):
     """Raised when a lock file indicates another writer is active."""
 
@@ -97,10 +105,8 @@ def classify_failure(error: Exception | str) -> tuple[str, str]:
         return "file_conflict", str(error)
     if isinstance(error, OSError) and getattr(error, "errno", None) == errno.ENOSPC:
         return "disk_full", str(error)
-    if isinstance(error, (httpx.TimeoutException, httpx.TransportError)):
-        return "network", str(error)
-    if isinstance(error, httpx.HTTPStatusError):
-        status_code = error.response.status_code
+    if isinstance(error, DownloadHTTPError):
+        status_code = error.status_code
         if status_code in {401, 403, 404, 410}:
             return "link_expired", f"HTTP {status_code}: {error}"
         if status_code == 507:
@@ -108,6 +114,8 @@ def classify_failure(error: Exception | str) -> tuple[str, str]:
         if status_code >= 500:
             return "network", f"HTTP {status_code}: {error}"
         return "unknown", f"HTTP {status_code}: {error}"
+    if isinstance(error, NETWORK_EXCEPTIONS):
+        return "network", str(error)
     return _failure_from_message(str(error))
 
 
@@ -210,15 +218,14 @@ def _is_retryable(error: Exception) -> bool:
     if isinstance(
         error,
         (
-            httpx.TimeoutException,
-            httpx.TransportError,
             DownloadStallError,
             DownloadIntegrityError,
+            *NETWORK_EXCEPTIONS,
         ),
     ):
         return True
-    if isinstance(error, httpx.HTTPStatusError):
-        return error.response.status_code >= 500
+    if isinstance(error, DownloadHTTPError):
+        return error.status_code >= 500
     return False
 
 
@@ -293,7 +300,7 @@ class DownloadManager:
             "downloads_retried": 0,
         }
 
-        self.timeout = httpx.Timeout(60.0, connect=30.0)
+        self.timeout = 60.0
         state_store.init_db()
 
     @property
@@ -750,7 +757,6 @@ class DownloadManager:
 
             headers = {
                 "Referer": "https://kwik.cx/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Encoding": "identity",
             }
 
@@ -761,8 +767,8 @@ class DownloadManager:
                     headers["Range"] = f"bytes={existing_bytes}-"
                     task.downloaded_bytes = existing_bytes
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream("GET", task.url, headers=headers, follow_redirects=True) as response:
+            async with make_async_session(timeout=self.timeout) as session:
+                async with session.stream("GET", task.url, headers=headers, allow_redirects=True) as response:
                     status = response.status_code
                     response_content_length = _safe_int(response.headers.get("content-length"), 0)
                     bytes_received_this_response = 0
@@ -775,7 +781,8 @@ class DownloadManager:
                         task.downloaded_bytes = 0
                         raise DownloadIntegrityError("Range not satisfiable, restarting from zero")
 
-                    response.raise_for_status()
+                    if status >= 400:
+                        raise DownloadHTTPError(status)
 
                     if status == 206 and existing_bytes > 0:
                         parsed_range = _parse_content_range(response.headers.get("content-range", ""))
@@ -814,19 +821,29 @@ class DownloadManager:
 
                     last_update = datetime.now()
                     last_bytes = task.downloaded_bytes
-                    last_chunk_time = datetime.now()
 
                     async with aiofiles.open(partial_path, file_mode) as f:
-                        async for chunk in response.aiter_bytes(self.chunk_size):
+                        aiterator = response.aiter_content(chunk_size=self.chunk_size)
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    aiterator.__anext__(),
+                                    timeout=STALL_TIMEOUT,
+                                )
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                raise DownloadStallError(f"No data for {STALL_TIMEOUT}s")
+
                             if self._shutdown_requested:
                                 raise DownloadPausedError("Paused for graceful shutdown")
                             if task.status == "stopping":
                                 raise DownloadStoppedError("Download stopped by user")
-
+                            if not chunk:
+                                continue
                             await f.write(chunk)
                             bytes_received_this_response += len(chunk)
                             task.downloaded_bytes += len(chunk)
-                            last_chunk_time = datetime.now()
 
                             if task.total_bytes > 0:
                                 task.progress = (task.downloaded_bytes / task.total_bytes) * 100
@@ -834,10 +851,6 @@ class DownloadManager:
                             now = datetime.now()
                             elapsed = (now - last_update).total_seconds()
                             if elapsed >= 1.0:
-                                stall_secs = (now - last_chunk_time).total_seconds()
-                                if stall_secs >= STALL_TIMEOUT:
-                                    raise DownloadStallError(f"No data for {STALL_TIMEOUT}s")
-
                                 bytes_diff = task.downloaded_bytes - last_bytes
                                 task.speed = bytes_diff / elapsed
                                 last_update = now

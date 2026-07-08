@@ -41,7 +41,7 @@
                             <path d="M9 15h6"/>
                             <path d="M9 18h6"/>
                         </svg>
-                        Manual
+                        Manual Fallback
                     </button>
                     <button class="nav-btn" data-view="downloads">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -172,20 +172,20 @@
             <!-- Manual Import View -->
             <section class="view" id="manual-view">
                 <div class="manual-section">
-                    <h1 class="page-title">Manual Import</h1>
-                    <p class="page-subtitle">Paste AnimePahe release API JSON from your browser session to bulk download without search</p>
+                    <h1 class="page-title">Manual Import (Fallback)</h1>
+                    <p class="page-subtitle">Paste browser-collected AnimePahe release JSON when the automatic flow needs help</p>
 
                     <div class="manual-card">
                         <div class="manual-steps">
-                            <div class="manual-step"><strong>1</strong><span>Open the anime page in AnimePahe after passing Cloudflare.</span></div>
+                            <div class="manual-step"><strong>1</strong><span>Open the anime page in AnimePahe in your browser.</span></div>
                             <div class="manual-step"><strong>2</strong><span>Copy the anime URL or the UUID after <code>/anime/</code>.</span></div>
                             <div class="manual-step"><strong>3</strong><span>Paste the <code>api?m=release</code> JSON below to generate a console command.</span></div>
                             <div class="manual-step"><strong>4</strong><span>Run the command on AnimePahe, then paste the enhanced JSON output into the second box.</span></div>
                         </div>
                         <div class="manual-fallback">
                             <div>
-                                <strong>Browser console command required</strong>
-                                <p>The command is generated from the release API JSON and automatically copies enhanced JSON with <code>pahe.win</code> options.</p>
+                                <strong>Fallback browser console command</strong>
+                                <p>The command is generated from the release API JSON and copies enhanced JSON with <code>pahe.win</code> options.</p>
                             </div>
                             <button class="btn btn-outline" id="manual-copy-snippet-btn">Copy Snippet</button>
                         </div>
@@ -491,6 +491,8 @@
                             </div>
                             <div class="settings-card-body">
                                 <p>Status: <strong id="diag-health-status">Unknown</strong></p>
+                                <p>AnimePahe: <strong id="diag-animepahe-base">-</strong></p>
+                                <p>Impersonation: <strong id="diag-curl-impersonate">-</strong></p>
                                 <p class="hint">Last updated: <span id="diag-health-updated">-</span></p>
                             </div>
                         </div>

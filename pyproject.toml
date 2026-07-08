@@ -5,6 +5,7 @@ description = "AnimePahe downloader with a FastAPI backend and Vite frontend."
 requires-python = ">=3.10"
 dependencies = [
     "aiofiles>=23.2.1",
+    "curl-cffi>=0.11",
     "fastapi>=0.109.0",
     "httpx>=0.26.0",
     "pydantic>=2.5.3",
@@ -20,3 +21,13 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

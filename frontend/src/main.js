@@ -1762,8 +1762,12 @@ function renderDiagnostics(data) {
 
     const healthStatus = document.getElementById('diag-health-status');
     const healthUpdated = document.getElementById('diag-health-updated');
+    const animepaheBase = document.getElementById('diag-animepahe-base');
+    const curlImpersonate = document.getElementById('diag-curl-impersonate');
     if (healthStatus) healthStatus.textContent = (health.status || 'unknown').toUpperCase();
     if (healthUpdated) healthUpdated.textContent = formatDiagTime(data?.generated_at || health.checked_at);
+    if (animepaheBase) animepaheBase.textContent = health.animepahe_base_url || data?.environment_checks?.animepahe_base_url || '-';
+    if (curlImpersonate) curlImpersonate.textContent = health.curl_impersonate || data?.environment_checks?.curl_impersonate || '-';
 
     document.getElementById('metric-started').textContent = metrics.downloads_started ?? 0;
     document.getElementById('metric-completed').textContent = metrics.downloads_completed ?? 0;

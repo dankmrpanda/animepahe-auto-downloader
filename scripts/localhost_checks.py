@@ -114,6 +114,7 @@ def check_node() -> bool:
 def check_python_dependencies() -> bool:
     required_imports = {
         "aiofiles": "aiofiles",
+        "curl-cffi": "curl_cffi",
         "fastapi": "fastapi",
         "httpx": "httpx",
         "pydantic": "pydantic",

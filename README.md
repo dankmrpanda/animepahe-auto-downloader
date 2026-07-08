@@ -56,20 +56,39 @@ run_web.bat
 - `POST /api/maintenance/cleanup` - remove stale partial/lock files and orphan queue entries.
 
 ## Host Access Notes
-AnimePahe currently redirects `animepahe.org` to `animepahe.pw`; the web backend defaults to the current `.pw` host. Override it with `ANIMEPAHE_BASE_URL` only if the public host changes again.
+The backend uses `curl_cffi` with Chrome impersonation for AnimePahe, pahe.win,
+Kwik, and CDN requests. This avoids the plain Python TLS fingerprint that caused
+many Cloudflare/DDoS-Guard 403 responses. Cookies are no longer required for the
+normal path.
 
-If the queue shows `No links resolved (link_expired)` with a message like `Kwik returned HTTP 403 with the configured KWIK_COOKIE_FILE`, the saved Kwik browser cookies are missing, stale, or from a different IP/session. The backend can reuse an explicit Netscape-format cookie export for Kwik without reading browser profile databases.
+AnimePahe defaults to `https://animepahe.com` and auto-detects the first
+reachable mirror from the known domain list at startup. Pin a host only when you
+need to override detection:
 
-To create or refresh that file:
+```powershell
+$env:ANIMEPAHE_BASE_URL="https://animepahe.com"
+```
+
+`run_web.bat` also sets:
+
+```powershell
+$env:ANIMEPAHE_CURL_IMPERSONATE="chrome"
+$env:KWIK_COOKIE_FILE="<repo>\cookies.txt"
+```
+
+`cookies.txt`, `user-agent.txt`, and Manual Import are fallback tools for rare
+periods where the host rejects even Chrome impersonation.
+
+To create or refresh the optional Kwik fallback files:
 
 1. Open the same browser you normally use for AnimePahe/Kwik on the same internet connection where this app is running. Do not use a VPN/proxy in one place and not the other.
 2. In the browser, open an AnimePahe episode and continue through to the Kwik download page until the Kwik page loads successfully.
-3. Export cookies for `kwik.cx` in **Netscape / cookies.txt format**. A browser extension such as `Get cookies.txt LOCALLY` can do this; export only the current `kwik.cx` cookies if the extension lets you filter by domain.
+3. Export cookies for `kwik.cx` in Netscape / cookies.txt format. A browser extension such as `Get cookies.txt LOCALLY` can do this; export only the current `kwik.cx` cookies if the extension lets you filter by domain.
 4. Save the exported file as `cookies.txt` in the repository root, next to `run_web.bat`.
 5. Copy the exact user-agent from that same browser session and save it as a single line in `user-agent.txt`, also next to `run_web.bat`. In Chrome or Edge, open DevTools Console and run `navigator.userAgent`.
 6. Restart the app with `run_web.bat`, then retry the failed queue item or manual import.
 
-For the Windows batch startup, the file should be here:
+For Windows batch startup, the fallback files should be here:
 
 ```text
 animepahe-auto-downloader/
@@ -84,24 +103,17 @@ Then launch:
 run_web.bat
 ```
 
-The batch script sets these values on every launch:
+For non-batch startup, set the same optional environment variables before
+running `npm run start:localhost`.
 
-```powershell
-$env:KWIK_COOKIE_FILE="<repo>\cookies.txt"
-$env:KWIK_USER_AGENT="<contents of user-agent.txt, or the built-in default if the file is missing>"
-$env:ANIMEPAHE_USER_AGENT=$env:KWIK_USER_AGENT
-$env:ANIMEPAHE_BASE_URL="https://animepahe.pw"
-```
-
-For non-batch startup, set the same environment variables before running `npm run start:localhost`.
-
-Export only cookies you are allowed to use, keep the file private, and refresh it from a browser session on the same IP if the host expires it.
-
-A CSV export from the browser network tab is not enough for this. It usually omits the `Cookie`, `Set-Cookie`, request-header, and response-body data required to replay a normal browser session.
+Export only cookies you are allowed to use, keep the file private, and refresh
+it from a browser session on the same IP if the host expires it. If you use the
+cookie fallback, a browser network CSV export is not enough; use Netscape cookie
+format.
 
 If you still get HTTP 403 after refreshing `cookies.txt`, check these common causes:
 
-- If the log says `Loaded 6 Kwik cookies` and then every `https://kwik.cx/f/...` request is still `403 Forbidden`, the app is reading the file correctly. The exported browser session is being rejected by Kwik/Cloudflare.
+- If the log says `Loaded 6 Kwik cookies` and then every `https://kwik.cx/f/...` request is still `403 Forbidden`, the app is reading the file correctly. Kwik/Cloudflare rejected curl_cffi impersonation and the exported browser session.
 - The file is not Netscape format. It should contain tab-separated cookie rows, not CSV columns.
 - The file does not contain current `kwik.cx` cookie rows.
 - The `user-agent.txt` value does not exactly match the browser session that produced `cf_clearance`; Cloudflare can reject otherwise valid cookies when the user-agent changes.

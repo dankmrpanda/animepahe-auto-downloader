@@ -8,12 +8,9 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-import httpx
-
-from core.kwik import DEFAULT_BROWSER_USER_AGENT
+from core.http_client import IMPERSONATE_TARGET, make_async_session
 
 
 def utc_now_iso() -> str:
@@ -68,38 +65,55 @@ def _check_disk_space(download_path: str) -> dict[str, Any]:
         return {"ok": False, "detail": f"Disk usage check failed: {e}", "path": download_path}
 
 
-async def _check_internet_reachability(test_url: str = "https://animepahe.pw") -> dict[str, Any]:
-    timeout = httpx.Timeout(8.0, connect=4.0)
+async def _check_internet_reachability(test_url: str = "https://animepahe.com") -> dict[str, Any]:
+    base_url = test_url.rstrip("/")
+    probe_url = f"{base_url}/api?m=search&l=1&q=naruto"
+    headers = {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "accept-language": "en-US,en;q=0.9",
+        "x-requested-with": "XMLHttpRequest",
+        "cookie": "__ddg2_=",
+        "referer": base_url + "/",
+    }
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(
-                test_url,
-                headers={
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "accept-language": "en-US,en;q=0.9",
-                    "user-agent": os.environ.get("ANIMEPAHE_USER_AGENT", DEFAULT_BROWSER_USER_AGENT),
-                },
-            )
+        async with make_async_session(timeout=8.0) as client:
+            response = await client.get(probe_url, headers=headers, allow_redirects=True)
+        json_ok = False
+        if response.status_code == 200:
+            try:
+                json_ok = isinstance(response.json(), dict)
+            except Exception:
+                json_ok = False
         return {
-            "ok": response.status_code < 500,
-            "detail": f"Reachable ({response.status_code})",
-            "url": test_url,
+            "ok": response.status_code == 200 and json_ok,
+            "detail": (
+                "Reachable JSON API"
+                if response.status_code == 200 and json_ok
+                else f"Unexpected response ({response.status_code})"
+            ),
+            "url": probe_url,
             "status_code": response.status_code,
         }
     except Exception as e:
-        return {"ok": False, "detail": f"Unreachable: {e}", "url": test_url}
+        return {"ok": False, "detail": f"Unreachable: {e}", "url": probe_url}
 
 
-async def run_environment_checks(download_path: str) -> dict[str, Any]:
+async def run_environment_checks(
+    download_path: str,
+    animepahe_base_url: str | None = None,
+) -> dict[str, Any]:
+    test_url = animepahe_base_url or "https://animepahe.com"
     checks: dict[str, Any] = {
         "path_exists": _check_download_path_exists(download_path),
         "path_writable": _check_download_path_writable(download_path),
         "disk_space": _check_disk_space(download_path),
-        "internet_reachability": await _check_internet_reachability(),
+        "internet_reachability": await _check_internet_reachability(test_url),
     }
     return {
         "checked_at": utc_now_iso(),
         "ok": all(item.get("ok", False) for item in checks.values()),
+        "animepahe_base_url": test_url.rstrip("/"),
+        "curl_impersonate": IMPERSONATE_TARGET,
         "checks": checks,
     }
 
@@ -157,5 +171,7 @@ def build_health_payload(
         "max_workers": download_manager.max_workers if manager_ready else None,
         "metrics": metrics,
         "queue": queue_status,
+        "animepahe_base_url": (startup_checks or {}).get("animepahe_base_url"),
+        "curl_impersonate": (startup_checks or {}).get("curl_impersonate", IMPERSONATE_TARGET),
         "startup_checks": startup_checks or {},
     }

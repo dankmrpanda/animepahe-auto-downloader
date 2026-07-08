@@ -8,15 +8,26 @@ import time
 import asyncio
 import logging
 import os
-import httpx
 import html
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 from typing import Optional
 from dataclasses import dataclass
 
+from curl_cffi.requests import AsyncSession
+
+from core.http_client import make_async_session
 from core.kwik import KwikPahe, KwikDecodeError
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_BASE_URL = os.environ.get("ANIMEPAHE_BASE_URL", "https://animepahe.com").rstrip("/")
+CANDIDATE_DOMAINS = [
+    "https://animepahe.com",
+    "https://animepahe.ru",
+    "https://animepahe.org",
+    "https://animepahe.si",
+    "https://animepahe.pw",
+]
 
 
 def _parse_size_to_bytes(size_text: str) -> Optional[int]:
@@ -123,16 +134,17 @@ class AnimePaheError(Exception):
 
 class AnimePaheClient:
     """Async client for AnimePahe website"""
-    
-    BASE_URL = os.environ.get("ANIMEPAHE_BASE_URL", "https://animepahe.pw").rstrip("/")
-    
+
     def __init__(self):
         self.kwik = KwikPahe()
-        self.timeout = httpx.Timeout(30.0, connect=10.0)
+        self.base_url = DEFAULT_BASE_URL
+        self._base_url_locked = bool(os.environ.get("ANIMEPAHE_BASE_URL"))
+        self._base_url_resolved = False
+        self.timeout = 30.0
         self._session_ready = False
-        self._session_cookies: dict[str, str] = {"__ddg2_": ""}
         self._session_lock = asyncio.Lock()
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: Optional[AsyncSession] = None
+        self._client_closed = False
         self._client_lock = asyncio.Lock()
         self._search_cache = TTLCache(ttl_seconds=300)
         self._details_cache = TTLCache(ttl_seconds=600)
@@ -147,56 +159,87 @@ class AnimePaheClient:
         headers = {
             "accept": "application/json, text/javascript, */*; q=0.01",
             "accept-language": "en-US,en;q=0.9",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-requested-with": "XMLHttpRequest",
+            "cookie": "__ddg2_=",
         }
+        user_agent = os.environ.get("ANIMEPAHE_USER_AGENT")
+        if user_agent:
+            headers["user-agent"] = user_agent
         if referer:
             headers["referer"] = referer
         return headers
-    
-    async def _ensure_session(self, client: httpx.AsyncClient) -> None:
-        """Ensure request cookies are available without repeated homepage warmups."""
-        for name, value in self._session_cookies.items():
-            client.cookies.set(name, value)
+
+    async def ensure_base_url(self, client: AsyncSession) -> None:
+        if self._base_url_resolved or self._base_url_locked:
+            self._base_url_resolved = True
+            return
+
+        async with self._session_lock:
+            if self._base_url_resolved:
+                return
+
+            for candidate in CANDIDATE_DOMAINS:
+                try:
+                    probe_url = f"{candidate}/api?m=search&l=1&q=naruto"
+                    response = await client.get(
+                        probe_url,
+                        headers=self._get_headers(candidate + "/"),
+                        allow_redirects=True,
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200 and isinstance(response.json(), dict):
+                        final_url = str(response.url).rstrip("/")
+                        parsed = urlparse(final_url)
+                        if parsed.scheme and parsed.netloc:
+                            self.base_url = f"{parsed.scheme}://{parsed.netloc}"
+                        else:
+                            self.base_url = candidate
+                        logger.info("Resolved AnimePahe base URL: %s", self.base_url)
+                        break
+                except Exception as exc:
+                    logger.debug("Candidate %s failed: %s", candidate, exc)
+            else:
+                logger.warning("Could not verify an AnimePahe JSON API domain; using %s", self.base_url)
+
+            self._base_url_resolved = True
+
+    async def _ensure_session(self, client: AsyncSession) -> None:
+        """Warm the shared browser-like session once."""
 
         if self._session_ready:
             return
 
         async with self._session_lock:
-            for name, value in self._session_cookies.items():
-                client.cookies.set(name, value)
-
             if self._session_ready:
                 return
 
             try:
                 await client.get(
-                    self.BASE_URL,
+                    self.base_url + "/",
                     headers=self._get_headers(),
-                    follow_redirects=True,
+                    allow_redirects=True,
                 )
-                for name, value in client.cookies.items():
-                    if name:
-                        self._session_cookies[name] = value
             except Exception as exc:
-                # We can still proceed with __ddg2_ only; avoid retrying this warmup on every request.
-                logger.debug("Session warmup skipped due to error: %s", exc)
+                logger.debug("Session warmup skipped: %s", exc)
             finally:
                 self._session_ready = True
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is not None and not self._client.is_closed:
+    async def _get_client(self) -> AsyncSession:
+        if self._client is not None and not self._client_closed:
             return self._client
 
         async with self._client_lock:
-            if self._client is None or self._client.is_closed:
-                self._client = httpx.AsyncClient(timeout=self.timeout)
+            if self._client is None or self._client_closed:
+                self._client = make_async_session(timeout=self.timeout)
+                self._client_closed = False
+                await self.ensure_base_url(self._client)
                 await self._ensure_session(self._client)
             return self._client
 
     async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
+        if self._client is not None and not self._client_closed:
+            await self._client.close()
+            self._client_closed = True
     
     async def _get_mal_details(self, title: str) -> dict:
         """
@@ -208,10 +251,10 @@ class AnimePaheClient:
             return cached
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with make_async_session(timeout=5.0) as client:
                 # Jikan API search
                 url = f"https://api.jikan.moe/v4/anime?q={quote(title)}&limit=1"
-                response = await client.get(url)
+                response = await client.get(url, allow_redirects=True)
                 
                 if response.status_code == 200:
                     data = response.json()
@@ -259,13 +302,13 @@ class AnimePaheClient:
         client = await self._get_client()
         await self._ensure_session(client)
 
-        search_url = f"{self.BASE_URL}/api?m=search&l=8&q={quote(query)}"
+        search_url = f"{self.base_url}/api?m=search&l=8&q={quote(query)}"
 
         try:
             response = await client.get(
                 search_url,
-                headers=self._get_headers(f"{self.BASE_URL}/"),
-                follow_redirects=True
+                headers=self._get_headers(f"{self.base_url}/"),
+                allow_redirects=True
             )
 
             if response.status_code != 200:
@@ -293,7 +336,7 @@ class AnimePaheClient:
                 # Handle poster URL - ensure it's absolute if relative
                 poster = item.get("poster", "")
                 if poster and not poster.startswith("http"):
-                    poster = f"{self.BASE_URL}{poster}" if poster.startswith("/") else poster
+                    poster = f"{self.base_url}{poster}" if poster.startswith("/") else poster
 
                 result = AnimeSearchResult(
                     session=item.get("session", ""),
@@ -358,11 +401,11 @@ class AnimePaheClient:
         client = await self._get_client()
         await self._ensure_session(client)
 
-        url = f"{self.BASE_URL}/anime/{session_id}"
+        url = f"{self.base_url}/anime/{session_id}"
         response = await client.get(
             url,
-            headers=self._get_headers(self.BASE_URL),
-            follow_redirects=True
+            headers=self._get_headers(self.base_url),
+            allow_redirects=True
         )
 
         if response.status_code != 200:
@@ -391,13 +434,13 @@ class AnimePaheClient:
         pahe_poster = poster_match.group(1) if poster_match else ""
 
         # Fetch episode count API and MAL details in parallel
-        api_url = f"{self.BASE_URL}/api?m=release&id={session_id}&sort=episode_asc&page=1"
+        api_url = f"{self.base_url}/api?m=release&id={session_id}&sort=episode_asc&page=1"
 
         async def fetch_episodes_api():
             resp = await client.get(
                 api_url,
                 headers=self._get_headers(url),
-                follow_redirects=True
+                allow_redirects=True
             )
             if resp.status_code != 200:
                 raise AnimePaheError(f"Failed to get episode count: {resp.status_code}")
@@ -451,12 +494,12 @@ class AnimePaheClient:
         client = await self._get_client()
         await self._ensure_session(client)
 
-        api_url = f"{self.BASE_URL}/api?m=release&id={session_id}&sort=episode_asc&page={page}"
+        api_url = f"{self.base_url}/api?m=release&id={session_id}&sort=episode_asc&page={page}"
 
         response = await client.get(
             api_url,
-            headers=self._get_headers(f"{self.BASE_URL}/anime/{session_id}"),
-            follow_redirects=True
+            headers=self._get_headers(f"{self.base_url}/anime/{session_id}"),
+            allow_redirects=True
         )
 
         if response.status_code != 200:
@@ -536,12 +579,12 @@ class AnimePaheClient:
         client = await self._get_client()
         await self._ensure_session(client)
 
-        play_url = f"{self.BASE_URL}/play/{anime_session}/{episode_session}"
+        play_url = f"{self.base_url}/play/{anime_session}/{episode_session}"
 
         response = await client.get(
             play_url,
-            headers=self._get_headers(f"{self.BASE_URL}/anime/{anime_session}"),
-            follow_redirects=True
+            headers=self._get_headers(f"{self.base_url}/anime/{anime_session}"),
+            allow_redirects=True
         )
 
         if response.status_code != 200:
@@ -604,9 +647,12 @@ class AnimePaheClient:
         """
         client = await self._get_client()
         await self._ensure_session(client)
-        client.cookies.set("__ddg2_", "")
 
-        link = await self.kwik.extract_download_link(client, pahe_link)
+        link = await self.kwik.extract_download_link(
+            client,
+            pahe_link,
+            referer=self.base_url + "/",
+        )
         return link
     
     async def get_episode_links_batch(

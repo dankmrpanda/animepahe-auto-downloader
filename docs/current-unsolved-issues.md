@@ -1,178 +1,100 @@
-# Current Unsolved Issues
+# Current Issues and Handoff Notes
 
 Last reviewed: 2026-07-08
 
-This document is a handoff for future sessions. It focuses on issues that remain
-unsolved, with references to prior-session artifacts and local runtime evidence.
+This document is a handoff for future sessions. It separates resolved historical
+failures from the risks that still need runtime evidence.
 
 ## Executive Summary
 
-The original web-app queue bug appears resolved: the app no longer uses the
-optimized flow that could resolve links but enqueue nothing. The current blocking
-problem is host/session access. Prior sessions repeatedly reached either
-AnimePahe or pahe.win, then became blocked by HTTP 403 responses from AnimePahe
-play pages or Kwik/Cloudflare final-link pages.
+The old queue bug is resolved, and the main AnimePahe/Kwik access blocker has
+now been addressed at the transport layer. AnimePahe, pahe.win, Kwik, and CDN
+requests use `curl_cffi` with Chrome impersonation instead of plain
+`httpx`/`requests`, which avoids the Python TLS fingerprint that produced many
+Cloudflare/DDoS-Guard 403 responses.
 
-In short: the queue path is now mostly deterministic, but link resolution is
-still blocked whenever the local HTTP client cannot reuse a valid browser
-session.
+Manual Import, `cookies.txt`, and `user-agent.txt` remain as optional fallbacks
+for periods where the hosts reject even browser-like impersonation.
 
-## Past Session References
+See `docs/host-access-handoff-report.md` for the 2026-07-08 live diagnostic
+pass. That report records a fixed local env-var bug (`CURL_IMPERSONATE` caused
+curl error 43 on Windows), the current AnimePahe Cloudflare 403/HTML responses,
+and the fact that the refreshed `cookies.txt` contains AnimePahe cookies but no
+Kwik cookie rows.
 
-- `docs/download-flow-main-parity.md` records the resolved historical bug:
-  "links resolve in logs but nothing enters the download queue." The fix was to
-  match `main.py`: resolve each episode in order, sort, then enqueue.
-- `logs/app.log` records the current blocked state from 2026-07-02. Several
-  sessions show `https://animepahe.pw` or `/play/...` returning `403 Forbidden`.
-- `logs/app.log` also shows a later session where pahe.win returned `200 OK`,
-  `cookies.txt` was loaded, and then every `https://kwik.cx/f/...` request still
-  returned `403 Forbidden`.
-- `README.md` now documents the expected cookie/user-agent refresh flow for
-  Kwik, including the case where cookies are loaded but Cloudflare still rejects
-  the session.
-- `TODO.localhost.md` shows most localhost production work as complete, with
-  localhost-only exposure confirmation still unchecked.
-
-## Unsolved Issues
+## Historical Fixes
 
 ### 1. Kwik/Cloudflare 403 Blocks Final Link Resolution
 
-Status: blocked by host/session behavior.
+Status: addressed by the `curl_cffi` transport swap.
 
-Evidence:
+What changed:
 
-- `logs/app.log` at `2026-07-02T09:41:35Z` shows `KWIK_COOKIE_FILE` was missing
-  and Kwik requests returned `403 Forbidden`.
-- Later sessions show `Loaded 6 Kwik cookies from ...\cookies.txt`, followed by
-  repeated `https://kwik.cx/f/...` responses with `HTTP/1.1 403 Forbidden`.
-- The strongest log entry is `2026-07-02T09:54:20Z`: loaded cookies included
-  `cf_clearance` and `kwik_session`, but Kwik still returned 403. The app
-  classified this as `No links resolved (link_expired)`.
+- `web/core/kwik.py` now accepts a `curl_cffi.requests.AsyncSession`.
+- The default path lets curl_cffi supply Chrome-compatible user-agent and client
+  hint headers.
+- `KWIK_COOKIE_FILE` still loads Netscape-format `kwik.cx` cookies as a fallback.
+- If loaded cookies are still rejected, the app fails fast with a session-level
+  `link_expired` message instead of retrying every episode.
 
-Current behavior:
+Remaining risk:
 
-- The backend can read an explicit Netscape-format `cookies.txt`.
-- `run_web.bat` sets `KWIK_COOKIE_FILE`, `KWIK_USER_AGENT`, and
-  `ANIMEPAHE_USER_AGENT`.
-- `web/core/kwik.py` emits a useful error when cookies load but are rejected.
-
-What remains unsolved:
-
-- A valid browser session still may not replay in the app.
-- The app cannot automatically prove that `cf_clearance`, `kwik_session`, user
-  agent, public IP, and the live browser session all match.
-- When Kwik rejects the session, downloads cannot proceed, even through manual
-  import.
-
-Likely next work:
-
-- Add a dedicated "Kwik session check" diagnostic that tests one user-provided
-  Kwik page and reports cookie count, presence of `cf_clearance`, user-agent
-  source, HTTP status, and whether the browser should be refreshed.
-- Add UI copy that clearly distinguishes "cookies missing" from "cookies loaded
-  but rejected."
-- Consider a safer manual mode that accepts already-resolved direct links, if
-  that is acceptable for the intended local workflow.
+- Kwik can still enter an "under attack" period and reject the impersonated
+  client. Refresh `cookies.txt` and `user-agent.txt` from a browser session on
+  the same IP before retrying.
 
 ### 2. AnimePahe 403 Blocks Normal Search/Play-Page Resolution
 
-Status: partially worked around, not fully solved.
+Status: addressed by the `curl_cffi` transport swap and domain auto-detection.
 
-Evidence:
+What changed:
 
-- `logs/app.log` shows `https://animepahe.pw` returning `403 Forbidden` during
-  startup/session warmup.
-- Earlier log entries show AnimePahe search and `/play/...` pages returning
-  `403 Forbidden`.
-- One logged manual-import attempt failed with: the release JSON import worked,
-  but the server was still blocked from opening `/play` pages to find pahe.win
-  options.
+- `web/core/animepahe.py` now uses an impersonating async session.
+- The default host changed to `https://animepahe.com`.
+- Startup auto-detects the first reachable known AnimePahe mirror unless
+  `ANIMEPAHE_BASE_URL` is explicitly set.
+- The resolved base URL is exposed in health and diagnostics output.
 
-Current behavior:
+Remaining risk:
 
-- The backend defaults to `https://animepahe.pw`.
-- Manual import was added so browser-fetched release metadata and play-page
-  options can be pasted into the app.
-- The frontend includes a browser-console snippet generator for manual import.
+- Mirror availability can drift. If auto-detection picks poorly, pin
+  `ANIMEPAHE_BASE_URL` temporarily and capture the failing health payload.
 
-What remains unsolved:
+### 3. Manual Import
 
-- Normal server-side AnimePahe search/play-page scraping can still be blocked by
-  403 responses.
-- There is no AnimePahe equivalent of `KWIK_COOKIE_FILE` for a first-class
-  browser-session replay path.
-- Manual import reduces AnimePahe dependence but does not remove the later Kwik
-  dependency.
-
-Likely next work:
-
-- Decide whether the project should support an explicit AnimePahe cookie export
-  path, similar to Kwik, or keep the current manual-import workaround.
-- Add diagnostics that separately report AnimePahe API reachability, AnimePahe
-  play-page reachability, pahe.win reachability, and Kwik reachability.
-
-### 3. Manual Import Still Cannot Bypass Kwik Rejection
-
-Status: useful workaround, still blocked at final link step.
-
-Evidence:
-
-- The manual-import route exists in `web/api/routes.py`.
-- The import models support browser-fetched `options` in `web/api/models.py`.
-- Runtime logs show manual import got far enough to process imported episodes,
-  but still ended with `No links resolved (link_expired)` when Kwik returned
-  403.
+Status: fallback path, not the primary happy path.
 
 Current behavior:
 
-- Manual import can bypass some AnimePahe API/play-page blocking if the pasted
-  JSON includes enough browser-fetched option data.
-- The backend still calls `get_direct_download_link()` for the selected pahe.win
-  option, which leads back to Kwik.
+- Manual Import still accepts browser-collected release JSON and generated
+  console output with `pahe.win` options.
+- It still routes selected options through the backend Kwik decoder so the normal
+  queue and downloader machinery remain unchanged.
 
-What remains unsolved:
+Remaining risk:
 
-- Manual import is not a complete offline/browser-assisted path.
-- It still needs the backend HTTP client to successfully decode and submit the
-  Kwik page.
+- Manual Import is not a direct-final-URL mode. If Kwik rejects the backend
+  session, Manual Import may still fail at final-link resolution.
 
-Likely next work:
+### 4. Cookie/User-Agent Workflow
 
-- Add a clear manual-import preflight that warns when imported episodes have no
-  options.
-- If acceptable, add an advanced import format for direct final URLs so users can
-  paste browser-resolved links without another backend Kwik request.
-
-### 4. Cookie/User-Agent Workflow Is Fragile
-
-Status: documented, but still operationally fragile.
-
-Evidence:
-
-- `README.md` now explains that `cookies.txt` must be Netscape format and that
-  `user-agent.txt` must match the same browser session.
-- Prior logs show both failure modes: missing cookie file, then loaded cookies
-  still rejected by Kwik/Cloudflare.
+Status: optional fallback.
 
 Current behavior:
 
-- `run_web.bat` reads `user-agent.txt` if present and falls back to a built-in
-  browser user-agent.
-- `cookies.txt` and `user-agent.txt` are ignored by git.
+- `run_web.bat` sets `KWIK_COOKIE_FILE=%~dp0cookies.txt`.
+- `run_web.bat` sets `ANIMEPAHE_CURL_IMPERSONATE=chrome`. Do not set the
+  legacy `CURL_IMPERSONATE` variable; it caused curl_cffi URL setopt failures
+  on Windows.
+- `run_web.bat` only sets `KWIK_USER_AGENT` and `ANIMEPAHE_USER_AGENT` when
+  `user-agent.txt` exists.
+- The default path avoids forced UA overrides so TLS and header identity stay
+  aligned with curl_cffi's Chrome impersonation.
 
-What remains unsolved:
+Remaining risk:
 
-- The app has no UI-visible freshness check for cookies.
-- The app cannot tell whether the export was created on the same public IP,
-  VPN, proxy, or network as the backend.
-- Users can replace `cookies.txt` while the app is running, but the backend must
-  be fully restarted to reload it.
-
-Likely next work:
-
-- Surface cookie-file path, load count, `cf_clearance` presence, and loaded
-  user-agent source in diagnostics.
-- Add a restart-required warning when session files are changed.
+- Cookie freshness, matching public IP, and browser-session validity are still
+  external conditions. Restart the app after replacing fallback files.
 
 ### 5. Localhost-Only Exposure Is Not Fully Closed Out
 
@@ -180,83 +102,37 @@ Status: mostly implemented, not formally confirmed.
 
 Evidence:
 
-- `TODO.localhost.md` still has `Confirm app remains localhost-only (no
-  public/LAN exposure by default)` unchecked.
 - `web/main.py` restricts CORS origins to localhost and 127.0.0.1.
 - `run_web.bat` and the `__main__` entrypoint bind Uvicorn to `127.0.0.1`.
-
-What remains unsolved:
-
-- There is no explicit verification document or automated check proving all
-  supported start paths bind only to loopback.
-- `npm run dev` starts both backend and Vite; its actual host exposure should be
-  verified, especially Vite's dev server binding.
 
 Likely next work:
 
 - Add a short localhost-only verification checklist.
-- Add startup checks that report the actual bound host/port for backend and
-  frontend dev mode.
+- Verify Vite dev-server host binding for `npm run dev`.
 
-### 6. Verification/Test Coverage Is Thin in the Current Workspace
+### 6. Verification/Test Coverage
 
-Status: unresolved verification gap.
+Status: partially closed.
 
-Evidence:
+What changed:
 
-- The workspace has a `tests/__pycache__` file, but no visible source test files
-  under `tests/`.
-- Prior work appears to have focused on runtime behavior and manual logs rather
-  than an executable regression suite.
+- Unit coverage now targets Kwik decode helpers, downloader failure
+  classification, AnimePahe domain resolution, and manual-import route behavior.
 
-What remains unsolved:
+Remaining risk:
 
-- There are no obvious tracked tests for the current resilience paths:
-  AnimePahe 403 classification, Kwik 403 classification, cookie-load summaries,
-  manual-import validation, and queue behavior after link-resolution failure.
-
-Likely next work:
-
-- Add small unit tests around failure classification and Kwik cookie-summary
-  behavior.
-- Add route-level tests for manual import with mocked AnimePahe/Kwik clients.
-
-### 7. Session Changes Are Not Finalized
-
-Status: current workspace/process issue.
-
-Evidence:
-
-- Git status in the current sandbox reported branch `app...origin/app` with
-  modified files including `.gitignore`, `README.md`, frontend files,
-  `run_web.bat`, `web/api/models.py`, `web/api/routes.py`, and
-  `web/core/kwik.py`.
-- Git also required a `safe.directory` override in this sandbox because Windows
-  ownership differs between the user account and sandbox account.
-
-What remains unsolved:
-
-- It is not clear which local changes are intended to be committed, squashed, or
-  revised.
-- Runtime artifacts exist locally (`logs/app.log`, `app_state.sqlite3`,
-  `cookies.txt`, `user-agent.txt`) and are intentionally ignored, but future
-  sessions should avoid treating them as source files.
-
-Likely next work:
-
-- Review the dirty diff before more implementation.
-- Commit or otherwise checkpoint the intended code/docs changes once the user is
-  satisfied.
+- The real proof is still live smoke testing against AnimePahe/Kwik:
+  search, episode listing, option extraction, direct-link resolution, a completed
+  MP4 download, and resume from a partial file.
 
 ## Resolved Historical Issue To Avoid Re-Chasing
 
-The old queue bug is documented as fixed. The important distinction for future
-sessions:
+The old queue bug is documented as fixed in `docs/download-flow-main-parity.md`.
+The important distinction for future sessions:
 
 - Old issue: valid links were resolved but dropped before enqueue.
-- Current issue: valid final direct links are usually not obtained because
-  AnimePahe or Kwik returns 403.
+- New transport issue: valid final links could not be obtained because
+  AnimePahe/Kwik rejected the client fingerprint.
 
-Future debugging should start at host reachability/session replay diagnostics
+Future debugging should start at health diagnostics and transport reachability
 before changing queue insertion logic again.
-

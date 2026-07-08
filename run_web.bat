@@ -7,22 +7,21 @@ echo Starting AnimePahe Web Downloader...
 REM Refresh host/session-related environment variables on every launch.
 REM cookies.txt is expected next to this batch file and is ignored by git.
 set "KWIK_COOKIE_FILE=%~dp0cookies.txt"
-set "DEFAULT_BROWSER_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+set "ANIMEPAHE_CURL_IMPERSONATE=chrome"
+REM Optional: pin a domain (otherwise auto-detected).
+REM set "ANIMEPAHE_BASE_URL=https://animepahe.com"
+REM Only set a UA if you also export matching cookies.txt (advanced).
 if exist "%~dp0user-agent.txt" (
     set /p BROWSER_USER_AGENT=<"%~dp0user-agent.txt"
     echo Using browser user-agent from user-agent.txt
-) else (
-    set "BROWSER_USER_AGENT=%DEFAULT_BROWSER_USER_AGENT%"
+    set "KWIK_USER_AGENT=%BROWSER_USER_AGENT%"
+    set "ANIMEPAHE_USER_AGENT=%BROWSER_USER_AGENT%"
 )
-if not defined BROWSER_USER_AGENT set "BROWSER_USER_AGENT=%DEFAULT_BROWSER_USER_AGENT%"
-set "KWIK_USER_AGENT=%BROWSER_USER_AGENT%"
-set "ANIMEPAHE_USER_AGENT=%BROWSER_USER_AGENT%"
-set "ANIMEPAHE_BASE_URL=https://animepahe.pw"
 
 if exist "%KWIK_COOKIE_FILE%" (
     echo Using Kwik cookie file: %KWIK_COOKIE_FILE%
 ) else (
-    echo Warning: %KWIK_COOKIE_FILE% was not found. Kwik may return HTTP 403 until cookies.txt is exported.
+    echo Optional Kwik cookie fallback not found: %KWIK_COOKIE_FILE%
 )
 
 where uv > nul 2> nul

@@ -1,0 +1,433 @@
+Handoff Plan: Restore AnimePahe Auto-Downloader (defeat Cloudflare 403s)
+1. Root cause (confirmed)
+Every failing request in this app goes through plain httpx.AsyncClient (and requests in main.py). AnimePahe (.pw/.com) and Kwik (kwik.cx) sit behind Cloudflare + DDoS-Guard, which fingerprint the TLS ClientHello (JA3/JA4) and HTTP/2 frame order before headers are even read. Python's TLS stack is a dead giveaway, so the WAF returns 403 regardless of headers.
+This is why the existing cookies.txt mitigation can't work: cf_clearance is cryptographically bound to the TLS fingerprint + IP + User-Agent of the client that solved the challenge. Replaying it from httpx (whose JA3 ≠ Chrome) is rejected.
+Verified fix: route the whole flow through curl_cffi with impersonate="chrome", which reproduces a real Chrome TLS/HTTP2 fingerprint. A current, working reference downloader (GDjkhp/NoobGPT/animepahe.py (https://raw.githubusercontent.com/GDjkhp/NoobGPT/main/animepahe.py)) uses exactly this and needs no cf_clearance cookie at all — just impersonate='chrome' + a __ddg2_= cookie + referer, for the search API, play page, pahe.win, and the kwik.cx POST. The app's Kwik decode logic is already identical to that reference; only the transport must change.
+2. Decisions locked (from your answers)
+1. Full swap to curl_cffi: AnimePahe client, Kwik resolver, diagnostics, and the final downloader.
+2. curl_cffi only — no headless browser/FlareSolverr. Keep cookies.txt as an optional manual fallback.
+3. Domain: default → animepahe.com, keep ANIMEPAHE_BASE_URL override, add startup auto-detection across known mirrors.
+4. Keep manual-import + cookies.txt as documented fallbacks; automatic flow becomes primary again.
+3. curl_cffi ⇄ httpx API mapping (applies everywhere)
+httpx	curl_cffi (curl_cffi.requests.AsyncSession)
+httpx.AsyncClient(timeout=...)	AsyncSession(impersonate="chrome", timeout=...)
+follow_redirects=True	allow_redirects=True
+client.stream("GET", ...)	session.stream("GET", ...) (async ctx mgr)
+response.aiter_bytes(n)	response.aiter_content(chunk_size=n)
+await client.aclose()	await session.close()
+client.is_closed	(none) — track our own flag
+response.status_code/.text/.json()/.headers/.url	same
+httpx.TimeoutException/TransportError/HTTPStatusError	curl_cffi.requests.exceptions.{Timeout,ConnectionError,HTTPError,RequestException}
+Two critical correctness rules:
+- Do NOT override User-Agent when impersonating (a UA that disagrees with the TLS fingerprint gets flagged). Let impersonate set UA + sec-ch-ua. Only set a UA if the user explicitly provides one.
+- Downloader timeout trap: curl_cffi's timeout can act as a hard total cap that would abort large downloads. Use per-chunk asyncio.wait_for(...) for stall detection instead of a small total timeout (details in Phase 4). Flag this for verification.
+---
+Phase 0 — Dependencies (pyproject.toml, uv.lock)
+Run (don't hand-edit the lock):
+uv add "curl_cffi>=0.11"
+uv add --group dev pytest pytest-asyncio
+Result in pyproject.toml:
+dependencies = [
+    "aiofiles>=23.2.1",
+    "curl-cffi>=0.11",          # NEW
+    "fastapi>=0.109.0",
+    "httpx>=0.26.0",            # keep for now; remove after swap is verified unused
+    "pydantic>=2.5.3",
+    ...
+]
+[dependency-groups]             # NEW
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+Keep httpx listed until the swap is confirmed green, then optionally drop it. curl_cffi ships binary wheels for Windows/Linux/macOS, so uv sync works on the Windows target.
+---
+Phase 1 — New shared transport module web/core/http_client.py (NEW FILE)
+Centralizes impersonation config and version-tolerant exception imports so every module and the retry logic share one source of truth.
+"""Shared curl_cffi HTTP layer with browser TLS impersonation.
+All AnimePahe / Kwik / CDN traffic must go through curl_cffi so the TLS (JA3/JA4)
+and HTTP/2 fingerprints match a real Chrome, which is what defeats the Cloudflare
+/ DDoS-Guard 403s that plain httpx/requests cannot pass.
+"""
+from __future__ import annotations
+import os
+from curl_cffi.requests import AsyncSession
+# Version-tolerant exception imports (module path changed across curl_cffi versions)
+try:
+    from curl_cffi.requests.exceptions import (
+        RequestException as CurlRequestError,
+        Timeout as CurlTimeout,
+        ConnectionError as CurlConnectionError,
+        HTTPError as CurlHTTPError,
+    )
+except Exception:  # pragma: no cover - older curl_cffi
+    from curl_cffi.requests.errors import RequestsError as CurlRequestError  # type: ignore
+    CurlTimeout = CurlConnectionError = CurlHTTPError = CurlRequestError
+# Chrome by default; overridable if a fingerprint needs pinning (e.g. "chrome124").
+IMPERSONATE_TARGET = os.environ.get("CURL_IMPERSONATE", "chrome")
+DEFAULT_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "30"))
+# Retryable network-level errors (used by the downloader retry policy).
+NETWORK_EXCEPTIONS: tuple[type[Exception], ...] = tuple(
+    {CurlTimeout, CurlConnectionError, CurlRequestError}
+)
+def make_async_session(
+    *,
+    timeout: float | tuple[float, float] | None = DEFAULT_TIMEOUT,
+    max_clients: int = 10,
+    **kwargs,
+) -> AsyncSession:
+    """Create an impersonating AsyncSession. Pass allow_redirects per-request."""
+    return AsyncSession(
+        impersonate=IMPERSONATE_TARGET,
+        timeout=timeout,
+        max_clients=max_clients,
+        **kwargs,
+    )
+---
+Phase 2 — web/core/animepahe.py
+Goal: swap transport to curl_cffi, make BASE_URL an instance attribute, add domain auto-detection, and stop overriding UA.
+2a. Imports (top of file)
+# remove: import httpx
+from core.http_client import make_async_session
+from curl_cffi.requests import AsyncSession
+2b. Module-level domain candidates (after imports)
+DEFAULT_BASE_URL = os.environ.get("ANIMEPAHE_BASE_URL", "https://animepahe.com").rstrip("/")
+# Ordered by current likelihood; auto-detection picks the first reachable one.
+CANDIDATE_DOMAINS = [
+    "https://animepahe.com",
+    "https://animepahe.ru",
+    "https://animepahe.org",
+    "https://animepahe.si",
+    "https://animepahe.pw",
+]
+2c. __init__ — replace client/session state and BASE_URL
+Current BASE_URL is a class attribute (line 127). Replace with an instance attribute and swap the httpx client/timeout:
+def __init__(self):
+    self.kwik = KwikPahe()
+    self.base_url = DEFAULT_BASE_URL
+    self._base_url_locked = bool(os.environ.get("ANIMEPAHE_BASE_URL"))  # respect explicit override
+    self._base_url_resolved = False
+    self.timeout = 30.0                       # was httpx.Timeout(...)
+    self._session_ready = False
+    self._session_lock = asyncio.Lock()
+    self._client: Optional[AsyncSession] = None
+    self._client_closed = False
+    self._client_lock = asyncio.Lock()
+    # caches unchanged ...
+Then rename every self.BASE_URL → self.base_url in this file. Occurrences to update: lines ~174, 262, 267, 296, 361, 364, 394, 454, 458, 539, 543. (Delete the old BASE_URL = os.environ.get(...) class attribute.)
+2d. _get_headers — do not set User-Agent
+def _get_headers(self, referer: Optional[str] = None) -> dict:
+    headers = {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "accept-language": "en-US,en;q=0.9",
+        "x-requested-with": "XMLHttpRequest",
+        "cookie": "__ddg2_=",          # parity with the known-working reference
+    }
+    ua = os.environ.get("ANIMEPAHE_USER_AGENT")  # only if explicitly configured
+    if ua:
+        headers["user-agent"] = ua
+    if referer:
+        headers["referer"] = referer
+    return headers
+2e. Domain auto-detection (new method)
+async def ensure_base_url(self, client: AsyncSession) -> None:
+    if self._base_url_resolved or self._base_url_locked:
+        self._base_url_resolved = True
+        return
+    async with self._session_lock:
+        if self._base_url_resolved:
+            return
+        for candidate in CANDIDATE_DOMAINS:
+            try:
+                resp = await client.get(candidate + "/", allow_redirects=True, timeout=10.0)
+                if resp.status_code == 200:
+                    final = str(resp.url).rstrip("/")
+                    # keep scheme+host only
+                    from urllib.parse import urlparse
+                    p = urlparse(final)
+                    self.base_url = f"{p.scheme}://{p.netloc}"
+                    logger.info("Resolved AnimePahe base URL: %s", self.base_url)
+                    break
+            except Exception as exc:
+                logger.debug("Candidate %s failed: %s", candidate, exc)
+        self._base_url_resolved = True
+2f. _ensure_session — simplify (curl_cffi persists cookies in its jar)
+async def _ensure_session(self, client: AsyncSession) -> None:
+    if self._session_ready:
+        return
+    async with self._session_lock:
+        if self._session_ready:
+            return
+        try:
+            await client.get(self.base_url + "/", headers=self._get_headers(), allow_redirects=True)
+        except Exception as exc:
+            logger.debug("Session warmup skipped: %s", exc)
+        finally:
+            self._session_ready = True
+2g. _get_client / close
+async def _get_client(self) -> AsyncSession:
+    if self._client is not None and not self._client_closed:
+        return self._client
+    async with self._client_lock:
+        if self._client is None or self._client_closed:
+            self._client = make_async_session(timeout=self.timeout)
+            self._client_closed = False
+            await self.ensure_base_url(self._client)   # resolve domain first
+            await self._ensure_session(self._client)
+        return self._client
+async def close(self) -> None:
+    if self._client is not None and not self._client_closed:
+        await self._client.close()
+        self._client_closed = True
+2h. All request call sites
+Change follow_redirects=True → allow_redirects=True in search, get_anime_details (both gets + the inner fetch_episodes_api), get_episodes, get_episode_download_options. No other logic changes — response.status_code/.text/.json() are identical.
+The _get_mal_details Jikan call (lines 211–214) hits api.jikan.moe (not Cloudflare-protected). Leave it on httpx or switch it to make_async_session() for consistency. Recommendation: switch it too, so httpx can be dropped entirely later. Small edit:
+async with make_async_session(timeout=5.0) as client:
+    response = await client.get(url, allow_redirects=True)
+2i. get_direct_download_link — pass base_url as referer, drop manual cookie poke
+async def get_direct_download_link(self, pahe_link: str) -> str:
+    client = await self._get_client()
+    await self._ensure_session(client)
+    return await self.kwik.extract_download_link(
+        client, pahe_link, referer=self.base_url + "/"
+    )
+---
+Phase 3 — web/core/kwik.py
+Goal: same transport swap; stop forcing UA; keep cookie-file loader as optional fallback.
+3a. Imports
+# remove: import httpx
+from curl_cffi.requests import AsyncSession
+3b. __init__ — UA becomes opt-in
+def __init__(self):
+    self.base_alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+    self.timeout = 30.0                                   # was httpx.Timeout(...)
+    # Only override UA if the user explicitly set one (must match a real session);
+    # otherwise let curl_cffi's impersonation supply UA + client hints.
+    self.user_agent = os.environ.get("KWIK_USER_AGENT") or os.environ.get("ANIMEPAHE_USER_AGENT")
+    self.cookie_file = os.environ.get("KWIK_COOKIE_FILE")
+    self._cookie_clients_loaded: set[int] = set()
+    self._cookie_load_summaries: dict[int, dict[str, object]] = {}
+Delete the DEFAULT_BROWSER_USER_AGENT forcing behavior — but keep the DEFAULT_BROWSER_USER_AGENT constant defined (module level) because diagnostics.py imports it (line 16). Simplest: leave the constant string in place, just stop defaulting to it in __init__.
+3c. _browser_headers — only add UA when set
+def _browser_headers(self, referer=None, origin=None, *, navigation=True) -> dict[str, str]:
+    headers = {
+        "accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                   "image/avif,image/webp,image/apng,*/*;q=0.8"),
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+    }
+    if self.user_agent:
+        headers["user-agent"] = self.user_agent
+    if referer: headers["referer"] = referer
+    if origin: headers["origin"] = origin
+    if navigation:
+        headers.update({
+            "upgrade-insecure-requests": "1",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "cross-site" if referer else "none",
+            "sec-fetch-user": "?1",
+        })
+    return headers
+3d. _fetch_with_retry — redirects + type hint
+- Change signature client: httpx.AsyncClient → client: AsyncSession (also in fetch_direct_link, decode_kwik_page, extract_download_link).
+- kwargs.setdefault("follow_redirects", True) → kwargs.setdefault("allow_redirects", True).
+- Keep the whole 403 messaging block (lines 251–279) as the fallback message when curl_cffi is also blocked — reword the final generic messages to mention impersonation, e.g. append: "curl_cffi Chrome impersonation was rejected; export fresh kwik.cx cookies to cookies.txt and restart."
+3e. fetch_direct_link
+- client.cookies.set("kwik_session", session_cookie) — curl_cffi Cookies.set(name, value, domain="", path="/"). Add domain="kwik.cx" to be safe: client.cookies.set("kwik_session", session_cookie, domain="kwik.cx", path="/").
+- .post(..., allow_redirects=False) (was follow_redirects=False). Reading response.headers.get("location") is unchanged.
+3f. _load_cookie_file
+Keep as-is (optional fallback). client.cookies.set(name, value, domain=..., path=...) works in curl_cffi. Wrap the .set call in a try/except so an API mismatch can't crash resolution:
+try:
+    client.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path or "/")
+except Exception:
+    continue
+3g. extract_download_link — accept referer param
+async def extract_download_link(self, client, pahe_embed_url, referer: Optional[str] = None) -> str:
+    ...
+    response = await self._fetch_with_retry(
+        client, pahe_embed_url,
+        headers=self._browser_headers(referer=referer or "https://kwik.cx/"),
+    )
+(Removes the hardcoded https://animepahe.pw/ referer at line 435.)
+---
+Phase 4 — web/core/downloader.py (the delicate one)
+Goal: swap streaming to curl_cffi, replace httpx exception coupling, and avoid the total-timeout trap using per-chunk asyncio.wait_for.
+4a. Imports
+# remove: import httpx
+from core.http_client import make_async_session, NETWORK_EXCEPTIONS
+4b. New library-agnostic HTTP error (near the other exceptions, ~line 63)
+class DownloadHTTPError(Exception):
+    """HTTP status error decoupled from the transport library."""
+    def __init__(self, status_code: int, message: str = ""):
+        self.status_code = status_code
+        super().__init__(message or f"HTTP {status_code}")
+4c. classify_failure (lines 100–110) — replace httpx branches
+    if isinstance(error, DownloadHTTPError):
+        sc = error.status_code
+        if sc in {401, 403, 404, 410}: return "link_expired", f"HTTP {sc}: {error}"
+        if sc == 507: return "disk_full", f"HTTP {sc}: {error}"
+        if sc >= 500: return "network", f"HTTP {sc}: {error}"
+        return "unknown", f"HTTP {sc}: {error}"
+    if isinstance(error, NETWORK_EXCEPTIONS):
+        return "network", str(error)
+    return _failure_from_message(str(error))
+(Delete the two isinstance(error, httpx.*) blocks. Keep the earlier DownloadIntegrityError/DownloadStallError/etc. branches.)
+4d. _is_retryable (lines 208–222)
+def _is_retryable(error: Exception) -> bool:
+    if isinstance(error, (DownloadStallError, DownloadIntegrityError, *NETWORK_EXCEPTIONS)):
+        return True
+    if isinstance(error, DownloadHTTPError):
+        return error.status_code >= 500
+    return False
+4e. __init__ timeout (line 296)
+self.timeout = 60.0   # connect/idle guarded by per-chunk wait_for below
+4f. _download_file streaming block (lines 764–849) — rewrite
+Replace the async with httpx.AsyncClient(...) / client.stream(...) / response.aiter_bytes(...) region with curl_cffi, an explicit status check (no raise_for_status), and a per-chunk stall watchdog:
+headers = {
+    "Referer": "https://kwik.cx/",
+    "Accept-Encoding": "identity",   # keep: byte-exact so integrity checks hold
+}
+# NOTE: no User-Agent — impersonation supplies it.
+existing_bytes = 0
+if os.path.exists(partial_path):
+    existing_bytes = os.path.getsize(partial_path)
+    if existing_bytes > 0:
+        headers["Range"] = f"bytes={existing_bytes}-"
+        task.downloaded_bytes = existing_bytes
+async with make_async_session(timeout=self.timeout) as session:
+    async with session.stream("GET", task.url, headers=headers, allow_redirects=True) as response:
+        status = response.status_code
+        response_content_length = _safe_int(response.headers.get("content-length"), 0)
+        bytes_received_this_response = 0
+        expected_total_size = 0
+        if status == 416:
+            if os.path.exists(partial_path):
+                os.remove(partial_path)
+            existing_bytes = 0
+            task.downloaded_bytes = 0
+            raise DownloadIntegrityError("Range not satisfiable, restarting from zero")
+        if status >= 400:
+            raise DownloadHTTPError(status)        # replaces response.raise_for_status()
+        # ... (206 vs 200 handling block is UNCHANGED, lines 780–813) ...
+        last_update = datetime.now()
+        last_bytes = task.downloaded_bytes
+        async with aiofiles.open(partial_path, file_mode) as f:
+            aiterator = response.aiter_content(chunk_size=self.chunk_size)
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(aiterator.__anext__(), timeout=STALL_TIMEOUT)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise DownloadStallError(f"No data for {STALL_TIMEOUT}s")
+                if self._shutdown_requested:
+                    raise DownloadPausedError("Paused for graceful shutdown")
+                if task.status == "stopping":
+                    raise DownloadStoppedError("Download stopped by user")
+                await f.write(chunk)
+                bytes_received_this_response += len(chunk)
+                task.downloaded_bytes += len(chunk)
+                if task.total_bytes > 0:
+                    task.progress = (task.downloaded_bytes / task.total_bytes) * 100
+                now = datetime.now()
+                elapsed = (now - last_update).total_seconds()
+                if elapsed >= 1.0:
+                    task.speed = (task.downloaded_bytes - last_bytes) / elapsed
+                    last_update = now
+                    last_bytes = task.downloaded_bytes
+                    self._persist_task(task)
+                    await self._notify_progress(task)
+        if response_content_length > 0 and bytes_received_this_response != response_content_length:
+            raise DownloadIntegrityError("Response body ended before expected Content-Length")
+The post-stream size/MP4 validation, os.replace, and all except/finally blocks (lines 851–964) stay the same — they now catch DownloadHTTPError/NETWORK_EXCEPTIONS via the updated classify_failure/_is_retryable.
+> Verification flag: confirm session.stream(...) accepts headers=/allow_redirects= and that aiter_content honors chunk_size. Confirm large downloads aren't capped by timeout=60.0; the per-chunk wait_for is the real inactivity guard, but if curl_cffi treats timeout as a hard total cap, pass timeout=(30.0, None) or set the low-speed libcurl option instead.
+---
+Phase 5 — web/core/diagnostics.py
+_check_internet_reachability (lines 71–90): swap to curl_cffi and test the resolved domain.
+from core.http_client import make_async_session
+async def _check_internet_reachability(test_url: str = "https://animepahe.com") -> dict[str, Any]:
+    try:
+        async with make_async_session(timeout=8.0) as client:
+            response = await client.get(test_url, allow_redirects=True)
+        return {"ok": response.status_code < 500,
+                "detail": f"Reachable ({response.status_code})",
+                "url": test_url, "status_code": response.status_code}
+    except Exception as e:
+        return {"ok": False, "detail": f"Unreachable: {e}", "url": test_url}
+run_environment_checks should accept and pass the resolved base URL (from the client) so the health check reflects reality. Wire animepahe_client.base_url through from main.py/routes.py where these are called (lines: main.py:42, routes.py:714). Keep the DEFAULT_BROWSER_USER_AGENT import working (constant still exists per Phase 3b).
+---
+Phase 6 — web/main.py wiring
+- In lifespan (after load_config), warm the client so the domain resolves at startup and is visible in /health:
+await animepahe_client._get_client()   # resolves base_url + warms session
+startup_checks = await run_environment_checks(app_config.download_path)
+startup_checks["animepahe_base_url"] = animepahe_client.base_url
+- Shutdown already calls await animepahe_client.close() (line 82) — now closes the curl_cffi session. Good.
+- Optionally surface impersonate target + resolved domain in build_health_payload for the diagnostics UI.
+---
+Phase 7 — run_web.bat + environment
+- Stop forcing a User-Agent (it would mismatch impersonation). Only export one if user-agent.txt exists (advanced users pairing with cookies.txt).
+- Remove the hardcoded ANIMEPAHE_BASE_URL=https://animepahe.pw so auto-detection runs; leave a commented example for pinning.
+- Add optional set "CURL_IMPERSONATE=chrome".
+- Keep KWIK_COOKIE_FILE wiring (optional fallback).
+New relevant lines:
+REM Optional: pin a domain (otherwise auto-detected)
+REM set "ANIMEPAHE_BASE_URL=https://animepahe.com"
+set "CURL_IMPERSONATE=chrome"
+set "KWIK_COOKIE_FILE=%~dp0cookies.txt"
+REM Only set a UA if you also export matching cookies.txt (advanced):
+if exist "%~dp0user-agent.txt" (
+    set /p BROWSER_USER_AGENT=<"%~dp0user-agent.txt"
+    set "KWIK_USER_AGENT=%BROWSER_USER_AGENT%"
+    set "ANIMEPAHE_USER_AGENT=%BROWSER_USER_AGENT%"
+)
+(Drop the unconditional DEFAULT_BROWSER_USER_AGENT/KWIK_USER_AGENT/ANIMEPAHE_USER_AGENT assignments.)
+Also update scripts/localhost_checks.py if it hard-checks for httpx or the .pw domain (grep it during implementation; it wasn't in the failing path but should be sanity-checked).
+---
+Phase 8 — Documentation
+- README.md → "Host Access Notes": rewrite to state the app now uses curl_cffi Chrome impersonation, works without cookies, auto-detects the domain, and that cookies.txt/user-agent.txt + manual import are optional fallbacks for rare "under attack" spikes. Remove the "CSV export not enough" emphasis and the claim that cookies are required.
+- docs/current-unsolved-issues.md: mark Issues #1 (Kwik 403) and #2 (AnimePahe 403) as addressed by the curl_cffi transport swap; reframe #3/#4 as optional fallbacks; note #6 (tests) is now partially closed by Phase 9. Keep the doc as the running handoff log.
+---
+Phase 9 — Tests (tests/, currently only a stale __pycache__)
+Add pytest.ini/pyproject asyncio config and:
+1. tests/test_kwik_decode.py — pure-logic: feed a known ("enc",N,"key",off,base,N) vector to KwikPahe.decode_obfuscated_js / _base_convert and assert the decoded form-action/token extraction. No network.
+2. tests/test_failure_classification.py — classify_failure/_is_retryable for DownloadHTTPError(403/500/507), NETWORK_EXCEPTIONS instances, and message strings ("kwik", "forbidden", "no space left").
+3. tests/test_domain_resolution.py — inject a fake session (object with async get returning a stub with .status_code/.url) into ensure_base_url; assert it picks the first 200 and respects ANIMEPAHE_BASE_URL lock.
+4. tests/test_routes_manual_import.py — FastAPI TestClient/httpx.ASGITransport with animepahe_client/download_manager monkeypatched so get_episode_download_options/get_direct_download_link are fakes; assert /api/download and /api/download/manual-import enqueue in episode order and that a simulated Kwik 403 yields the link_expired broadcast.
+Mock at the session-factory boundary (make_async_session) or by injecting fake clients — do not try to mock libcurl. Add pytest-asyncio (Phase 0).
+---
+Phase 10 — Frontend (optional, low priority)
+frontend/src/main.js + index.html: the manual-import view and console-snippet generator still work as a fallback. Only change needed is copy: relabel the Manual Import tab as "Manual Import (fallback)" and soften instructions now that the automatic flow works. Optionally add the resolved domain + impersonation target to the diagnostics view (refreshDiagnostics) using the new /health fields. No structural JS changes required.
+---
+Verification checklist (for the implementing session)
+Automated:
+- uv sync succeeds (curl_cffi wheel installs on the target OS).
+- uv run pytest green.
+Manual smoke (the real proof):
+1. uv run python -c "from curl_cffi import requests as r; print(r.get('https://tls.browserleaks.com/json', impersonate='chrome').json()['ja3n_hash'])" — prints a Chrome-like hash.
+2. Start app; GET /health shows resolved animepahe_base_url and internet_reachability.ok = true.
+3. GET /api/search?q=naruto → non-empty results (was 403).
+4. GET /api/anime/{session}/episodes?all_pages=true → episodes.
+5. GET /api/episode/{anime}/{ep}/links → pahe.win options.
+6. POST /api/download for 1 episode → link resolves (no link_expired), task enqueues, file downloads to completion and passes the MP4 integrity check.
+7. Resume test: kill mid-download, restart → partial resumes via Range.
+Risks & rollback
+- curl_cffi timeout semantics on large downloads — highest risk; mitigated by per-chunk wait_for (Phase 4f). Verify explicitly.
+- cookies.set / stream signature drift across curl_cffi versions — pinned >=0.11; version-tolerant exception import already handles the other known drift.
+- Cloudflare "under attack" spikes — curl_cffi occasionally blocked; the retained cookies.txt + manual-import fallbacks cover this (per your decision).
+- Rollback: the change is transport-layer and file-scoped; reverting http_client.py + the four core files restores the httpx behavior. Keep commits per-phase for easy bisect.
+File-by-file summary
+File	Change
+pyproject.toml / uv.lock	add curl-cffi, dev group pytest/pytest-asyncio
+web/core/http_client.py	new — impersonating session factory + exception exports
+web/core/animepahe.py	curl_cffi swap, BASE_URL→instance base_url, domain auto-detect, no forced UA
+web/core/kwik.py	curl_cffi swap, UA opt-in, referer param, keep cookie-file fallback
+web/core/downloader.py	curl_cffi streaming, DownloadHTTPError, per-chunk stall watchdog, exception rewire
+web/core/diagnostics.py	curl_cffi reachability, report resolved domain
+web/main.py	resolve domain at startup, expose in health
+web/api/routes.py	pass resolved base_url to env checks (minor)
+run_web.bat	drop forced UA + forced domain, add CURL_IMPERSONATE, keep cookie fallback
+README.md, docs/current-unsolved-issues.md	document curl_cffi as primary; fallbacks optional
+tests/*	new unit + route tests
+frontend/src/main.js (optional)	relabel manual import as fallback; show domain/impersonation in diagnostics
+Recommended commit order: Phase 0 → 1 → 2 → 3 (search/resolution works) → 5/6 (diagnostics/startup) → 4 (downloader) → 7 → 9 → 8 → 10.
+The single most important change is Phases 1–3: once AnimePahe + Kwik requests go through curl_cffi(impersonate="chrome"), the 403s that broke the app disappear. Everything else is correctness, robustness, and hygiene around that core swap.
+
