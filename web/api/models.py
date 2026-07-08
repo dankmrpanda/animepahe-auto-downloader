@@ -106,6 +106,36 @@ class BatchDownloadRequest(BaseModel):
     resolution: int = Field(default=0, description="0=highest, -1=lowest, or specific like 720")
 
 
+class ImportedDownloadOption(BaseModel):
+    """Download option metadata parsed from an AnimePahe play page."""
+    pahe_link: str = Field(min_length=1)
+    quality: str = ""
+    resolution: int = 0
+    audio: str = "jpn"
+    size: str = ""
+
+
+class ImportedEpisode(BaseModel):
+    """Episode metadata copied from AnimePahe release API responses."""
+    episode: float
+    session: str = Field(min_length=1)
+    title: str = ""
+    snapshot: str = ""
+    duration: str = ""
+    created_at: str = ""
+    filler: bool = False
+    anime_session: Optional[str] = None
+    options: list[ImportedDownloadOption] = Field(default_factory=list)
+
+
+class ManualImportDownloadRequest(BaseModel):
+    """Request to download episodes from manually imported release metadata."""
+    anime_session: str = Field(min_length=1)
+    anime_title: str = Field(min_length=1)
+    episodes: list[ImportedEpisode] = Field(min_length=1)
+    resolution: int = Field(default=0, description="0=highest, -1=lowest, or specific like 720")
+
+
 class DownloadProgress(BaseModel):
     """Progress update for a download"""
     id: str

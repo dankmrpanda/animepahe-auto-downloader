@@ -29,6 +29,10 @@ const state = {
     lastActiveAndPending: 0,
     lastQueueAnnouncement: '',
     notificationsPermission: 'default',
+    manualImport: {
+        episodes: [],
+        selectedEpisodes: new Set()
+    },
 };
 
 const STORAGE_KEYS = {
@@ -83,7 +87,7 @@ function loadUIState() {
     if (!saved) return;
     try {
         const ui = JSON.parse(saved);
-        if (ui.currentView && ['search', 'downloads', 'settings', 'diagnostics'].includes(ui.currentView)) {
+        if (ui.currentView && ['search', 'manual', 'downloads', 'settings', 'diagnostics'].includes(ui.currentView)) {
             state.currentView = ui.currentView;
         }
         if (Number.isFinite(ui.qualitySelect)) {
@@ -333,6 +337,22 @@ const API = {
             })
         });
         if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to start download'));
+        this._invalidateByPrefix('GET:/queue');
+        return res.json();
+    },
+
+    async startManualImportDownload(animeSession, animeTitle, episodes, resolution) {
+        const res = await fetch(`${this.baseUrl}/download/manual-import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                anime_session: animeSession,
+                anime_title: animeTitle,
+                episodes: episodes,
+                resolution: resolution
+            })
+        });
+        if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to start manual import download'));
         this._invalidateByPrefix('GET:/queue');
         return res.json();
     },
@@ -886,6 +906,459 @@ function backToSearch() {
 }
 
 // ============================================
+// Manual Import View
+// ============================================
+
+function extractAnimeSession(value) {
+    const raw = (value || '').trim();
+    if (!raw) return '';
+    const uuidMatch = raw.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+    if (uuidMatch) return uuidMatch[0];
+    return raw;
+}
+
+function splitJsonDocuments(text) {
+    const docs = [];
+    let start = -1;
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === quote) {
+                quote = '';
+            }
+            continue;
+        }
+
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            continue;
+        }
+
+        if (ch === '{' || ch === '[') {
+            if (depth === 0) start = i;
+            depth += 1;
+        } else if (ch === '}' || ch === ']') {
+            depth -= 1;
+            if (depth === 0 && start >= 0) {
+                docs.push(text.slice(start, i + 1));
+                start = -1;
+            }
+        }
+    }
+
+    return docs;
+}
+
+function decodeConsoleStringLiteral(text) {
+    const trimmed = text.trim();
+    if (trimmed.length < 2) return trimmed;
+
+    const quote = trimmed[0];
+    if ((quote !== "'" && quote !== '"') || trimmed[trimmed.length - 1] !== quote) {
+        return trimmed;
+    }
+
+    let decoded = '';
+    for (let i = 1; i < trimmed.length - 1; i++) {
+        const ch = trimmed[i];
+        if (ch !== '\\') {
+            decoded += ch;
+            continue;
+        }
+
+        i += 1;
+        const escaped = trimmed[i];
+        if (escaped === 'n') decoded += '\n';
+        else if (escaped === 'r') decoded += '\r';
+        else if (escaped === 't') decoded += '\t';
+        else if (escaped === 'b') decoded += '\b';
+        else if (escaped === 'f') decoded += '\f';
+        else if (escaped === 'u' && i + 4 < trimmed.length - 1) {
+            const hex = trimmed.slice(i + 1, i + 5);
+            if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+                decoded += String.fromCharCode(parseInt(hex, 16));
+                i += 4;
+            } else {
+                decoded += `\\u${hex}`;
+                i += 4;
+            }
+        } else {
+            decoded += escaped || '';
+        }
+    }
+
+    return decoded.trim();
+}
+
+function parseJsonPayloadsFromText(text, emptyMessage) {
+    const normalized = decodeConsoleStringLiteral((text || '').trim());
+    if (!normalized) throw new Error(emptyMessage);
+
+    try {
+        return [JSON.parse(normalized)];
+    } catch {
+        const docs = splitJsonDocuments(normalized);
+        if (docs.length === 0) throw new Error('Could not find valid JSON objects in the pasted text');
+        return docs.map(doc => JSON.parse(doc));
+    }
+}
+
+function getReleaseItems(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.data)) return payload.data;
+    if (Array.isArray(payload?.episodes)) return payload.episodes;
+    if (Array.isArray(payload?.releases)) return payload.releases;
+    return [];
+}
+
+function normalizeImportedEpisode(item) {
+    const episode = Number(item?.episode ?? item?.episode2 ?? item?.number);
+    const session = String(item?.session || '').trim();
+    if (!Number.isFinite(episode) || !session) return null;
+    const rawOptions = item?.options || item?.download_options || item?.downloadOptions || [];
+    const options = Array.isArray(rawOptions)
+        ? rawOptions.map(normalizeImportedOption).filter(Boolean)
+        : [];
+
+    return {
+        episode,
+        session,
+        title: String(item?.title || ''),
+        snapshot: String(item?.snapshot || ''),
+        duration: String(item?.duration || ''),
+        created_at: String(item?.created_at || item?.createdAt || ''),
+        filler: item?.filler === true || item?.filler === 1 || item?.filler === '1',
+        options
+    };
+}
+
+function normalizeImportedOption(item) {
+    const paheLink = String(item?.pahe_link || item?.paheLink || item?.url || item?.href || '').trim();
+    if (!paheLink) return null;
+    const quality = String(item?.quality || item?.text || item?.label || '');
+    const resMatch = quality.match(/\b(\d{3,4})p\b/i);
+    const audioMatch = quality.match(/\b(jpn|eng|multi)\b/i);
+    const sizeMatch = quality.match(/(\d+(?:\.\d+)?\s*(?:MB|GB))/i);
+    return {
+        pahe_link: paheLink,
+        quality,
+        resolution: Number(item?.resolution || item?.res || (resMatch ? resMatch[1] : 0)),
+        audio: String(item?.audio || (audioMatch ? audioMatch[1].toLowerCase() : 'jpn')),
+        size: String(item?.size || (sizeMatch ? sizeMatch[1] : ''))
+    };
+}
+
+function parseManualImportJson() {
+    const payloads = parseJsonPayloadsFromText(
+        document.getElementById('manual-json').value,
+        'Paste the enhanced JSON copied by the browser console command'
+    );
+
+    const sessionInput = document.getElementById('manual-session');
+    const importedSession = payloads.find(payload => payload?.anime_session)?.anime_session;
+    if (importedSession && sessionInput && !sessionInput.value.trim()) {
+        sessionInput.value = importedSession;
+    }
+
+    const bySession = new Map();
+    for (const payload of payloads) {
+        for (const item of getReleaseItems(payload)) {
+            const episode = normalizeImportedEpisode(item);
+            if (episode && !bySession.has(episode.session)) {
+                bySession.set(episode.session, episode);
+            }
+        }
+    }
+
+    return Array.from(bySession.values()).sort((a, b) => a.episode - b.episode);
+}
+
+function getReleasePayloadsForSnippet() {
+    return parseJsonPayloadsFromText(
+        document.getElementById('manual-release-json').value,
+        'Paste the AnimePahe release API JSON before copying the console command'
+    );
+}
+
+function buildManualBrowserSnippet() {
+    const releasePayloads = getReleasePayloadsForSnippet();
+    const animeSession = extractAnimeSession(document.getElementById('manual-session').value);
+    const releaseLiteral = JSON.stringify(releasePayloads);
+    const sessionLiteral = JSON.stringify(animeSession);
+
+    return `(async () => {
+  const releasePayloads = ${releaseLiteral};
+  const configuredSession = ${sessionLiteral};
+  const animeSession = configuredSession || location.pathname.match(/\\/anime\\/([^/?#]+)/)?.[1] || prompt('Anime session UUID');
+  const episodes = releasePayloads.flatMap((releaseJson) => releaseJson.data || releaseJson.episodes || releaseJson.releases || []);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const copyText = async (text) => {
+    localStorage.setItem('animepahe_manual_import_json', text);
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const box = document.createElement('textarea');
+      box.value = text;
+      box.style.position = 'fixed';
+      box.style.left = '0';
+      box.style.top = '0';
+      document.body.appendChild(box);
+      box.focus();
+      box.select();
+      const copied = document.execCommand('copy');
+      box.remove();
+      return copied;
+    }
+  };
+  const fetchWithBackoff = async (url, tries = 4) => {
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      const response = await fetch(url, { credentials: 'include' });
+      if (response.status !== 429) return response;
+      const waitSeconds = Number(response.headers.get('retry-after') || 0);
+      const waitMs = waitSeconds > 0 ? waitSeconds * 1000 : 5000 * attempt;
+      console.warn(\`429 for \${url}; waiting \${Math.round(waitMs / 1000)}s before retry \${attempt}/\${tries}\`);
+      await sleep(waitMs);
+    }
+    return fetch(url, { credentials: 'include' });
+  };
+  const parseOptions = (html) => [...html.matchAll(/href="(https:\\/\\/pahe\\.win\\/\\S*)"[^>]*>([^)]*\\))[^<]*</g)].map((m) => {
+    const quality = m[2] || '';
+    const res = quality.match(/\\b(\\d{3,4})p\\b/i);
+    const audio = quality.match(/\\b(jpn|eng|multi)\\b/i);
+    const size = quality.match(/(\\d+(?:\\.\\d+)?\\s*(?:MB|GB))/i);
+    return {
+      pahe_link: decodeURIComponent(m[1]),
+      quality,
+      resolution: res ? Number(res[1]) : 0,
+      audio: audio ? audio[1].toLowerCase() : 'jpn',
+      size: size ? size[1] : ''
+    };
+  });
+  const out = [];
+  for (const ep of episodes) {
+    const response = await fetchWithBackoff(\`/play/\${animeSession}/\${ep.session}\`);
+    if (!response.ok) {
+      console.warn(\`Skipping episode \${ep.episode}: HTTP \${response.status}\`);
+      out.push({ ...ep, options: [], play_status: response.status });
+      await sleep(2500);
+      continue;
+    }
+    const html = await response.text();
+    out.push({ ...ep, options: parseOptions(html) });
+    console.log(\`Parsed episode \${ep.episode}: \${out[out.length - 1].options.length} options\`);
+    await sleep(2500);
+  }
+  const result = JSON.stringify({ anime_session: animeSession, data: out }, null, 2);
+  const copied = await copyText(result);
+  console.log(copied
+    ? \`Copied \${out.length} episodes with play-page options.\`
+    : 'Could not auto-copy. Backup saved as localStorage.animepahe_manual_import_json.');
+})();`;
+}
+
+function updateManualBrowserSnippet() {
+    const snippetBox = document.getElementById('manual-browser-snippet');
+    if (!snippetBox) return;
+    try {
+        snippetBox.value = buildManualBrowserSnippet();
+    } catch (error) {
+        snippetBox.value = `// ${error.message}`;
+    }
+}
+
+function renderManualImportEpisodes() {
+    const container = document.getElementById('manual-episodes-grid');
+    const summary = document.getElementById('manual-import-summary');
+    const episodes = state.manualImport.episodes;
+
+    if (!episodes.length) {
+        container.innerHTML = '';
+        summary.textContent = 'No imported episodes';
+        updateManualImportSelectionCount();
+        return;
+    }
+
+    const first = episodes[0]?.episode;
+    const last = episodes[episodes.length - 1]?.episode;
+    const optionCount = episodes.reduce((total, ep) => total + (ep.options?.length || 0), 0);
+    summary.textContent = `${episodes.length} imported episodes (${first} to ${last})${optionCount ? ` with ${optionCount} play-page options` : ''}`;
+
+    container.innerHTML = episodes.map(ep => `
+        <button
+            type="button"
+            class="manual-episode-card ${ep.filler ? 'filler' : ''}"
+            data-session="${escapeHtml(ep.session)}"
+            data-episode="${ep.episode}"
+            aria-pressed="false"
+            title="${escapeHtml(ep.title || `Episode ${ep.episode}`)}">
+            <span class="episode-number">${ep.episode}</span>
+            <span class="episode-label">Episode</span>
+        </button>
+    `).join('');
+
+    container.querySelectorAll('.manual-episode-card').forEach(card => {
+        card.addEventListener('click', () => toggleManualImportEpisode(card));
+    });
+
+    document.getElementById('manual-range-start').max = Math.max(last || 1, 1);
+    document.getElementById('manual-range-end').max = Math.max(last || 1, 1);
+    document.getElementById('manual-range-start').value = first || 1;
+    document.getElementById('manual-range-end').value = Math.min((first || 1) + 11, last || 12);
+    document.getElementById('manual-select-all-btn').disabled = false;
+    document.getElementById('manual-select-range-btn').disabled = false;
+    updateManualImportSelectionCount();
+}
+
+function toggleManualImportEpisode(card) {
+    const session = card.dataset.session;
+    if (state.manualImport.selectedEpisodes.has(session)) {
+        state.manualImport.selectedEpisodes.delete(session);
+        card.classList.remove('selected');
+        card.setAttribute('aria-pressed', 'false');
+    } else {
+        state.manualImport.selectedEpisodes.add(session);
+        card.classList.add('selected');
+        card.setAttribute('aria-pressed', 'true');
+    }
+    updateManualImportSelectionCount();
+}
+
+function selectAllManualImportEpisodes() {
+    document.querySelectorAll('.manual-episode-card').forEach(card => {
+        state.manualImport.selectedEpisodes.add(card.dataset.session);
+        card.classList.add('selected');
+        card.setAttribute('aria-pressed', 'true');
+    });
+    updateManualImportSelectionCount();
+}
+
+function deselectManualImportEpisodes() {
+    document.querySelectorAll('.manual-episode-card').forEach(card => {
+        card.classList.remove('selected');
+        card.setAttribute('aria-pressed', 'false');
+    });
+    state.manualImport.selectedEpisodes.clear();
+    updateManualImportSelectionCount();
+}
+
+function selectManualImportRange(start, end) {
+    if (start > end) {
+        [start, end] = [end, start];
+    }
+    deselectManualImportEpisodes();
+    document.querySelectorAll('.manual-episode-card').forEach(card => {
+        const epNum = parseFloat(card.dataset.episode);
+        if (epNum >= start && epNum <= end) {
+            state.manualImport.selectedEpisodes.add(card.dataset.session);
+            card.classList.add('selected');
+            card.setAttribute('aria-pressed', 'true');
+        }
+    });
+    updateManualImportSelectionCount();
+}
+
+function updateManualImportSelectionCount() {
+    const count = state.manualImport.selectedEpisodes.size;
+    const hasEpisodes = state.manualImport.episodes.length > 0;
+    document.getElementById('manual-selected-count').textContent = count;
+    document.getElementById('manual-download-btn').disabled = count === 0;
+    document.getElementById('manual-select-all-btn').disabled = !hasEpisodes;
+    document.getElementById('manual-select-range-btn').disabled = !hasEpisodes;
+}
+
+function clearManualImport() {
+    state.manualImport.episodes = [];
+    state.manualImport.selectedEpisodes.clear();
+    document.getElementById('manual-release-json').value = '';
+    document.getElementById('manual-json').value = '';
+    document.getElementById('manual-range-picker').style.display = 'none';
+    updateManualBrowserSnippet();
+    renderManualImportEpisodes();
+}
+
+function parseManualImport() {
+    try {
+        const episodes = parseManualImportJson();
+        if (episodes.length === 0) {
+            throw new Error('No episodes with session IDs were found in the pasted JSON');
+        }
+        const optionCount = episodes.reduce((total, episode) => total + (episode.options?.length || 0), 0);
+        if (optionCount === 0) {
+            throw new Error('This looks like release API JSON only. Run the generated console command and paste its enhanced JSON output here.');
+        }
+        state.manualImport.episodes = episodes;
+        state.manualImport.selectedEpisodes.clear();
+        renderManualImportEpisodes();
+        showToast('success', 'Episodes Imported', `${episodes.length} episodes and ${optionCount} options ready`);
+        announceStatus(`${episodes.length} imported episodes ready.`);
+    } catch (error) {
+        showToast('error', 'Import Failed', error.message);
+        announceStatus('Manual import failed.', true);
+    }
+}
+
+async function copyManualBrowserSnippet() {
+    try {
+        const snippet = buildManualBrowserSnippet();
+        document.getElementById('manual-browser-snippet').value = snippet;
+        await navigator.clipboard.writeText(snippet);
+        showToast('success', 'Snippet Copied', 'Run it in the AnimePahe page console');
+    } catch (error) {
+        updateManualBrowserSnippet();
+        document.getElementById('manual-browser-snippet').select();
+        showToast('error', 'Snippet Not Ready', error.message);
+    }
+}
+
+async function downloadManualImportSelection() {
+    const animeTitle = document.getElementById('manual-title').value.trim();
+    const animeSession = extractAnimeSession(document.getElementById('manual-session').value);
+    const resolution = parseInt(document.getElementById('manual-quality').value, 10);
+
+    if (!animeTitle) {
+        showToast('error', 'Missing Title', 'Enter the anime title');
+        return;
+    }
+    if (!animeSession) {
+        showToast('error', 'Missing Session', 'Enter the AnimePahe anime URL or session UUID');
+        return;
+    }
+
+    const selected = state.manualImport.episodes.filter(ep => state.manualImport.selectedEpisodes.has(ep.session));
+    if (selected.length === 0) {
+        showToast('error', 'No Episodes', 'Select at least one imported episode');
+        return;
+    }
+    const missingOptions = selected.filter(ep => !ep.options || ep.options.length === 0);
+    if (missingOptions.length > 0) {
+        showToast('error', 'Missing Options', `Episode ${missingOptions[0].episode} has no pahe.win options`);
+        return;
+    }
+
+    try {
+        state.processingDownloads = true;
+        showToast('info', 'Preparing...', 'Resolving imported episodes');
+        const result = await API.startManualImportDownload(animeSession, animeTitle, selected, resolution);
+        showToast('success', 'Manual Download Started', result.message || 'Imported episodes are processing');
+        announceStatus('Manual import downloads queued successfully.');
+        switchView('downloads');
+    } catch (error) {
+        state.processingDownloads = false;
+        showToast('error', 'Manual Download Failed', error.message);
+    }
+}
+
+// ============================================
 // Downloads View
 // ============================================
 
@@ -1396,6 +1869,10 @@ async function loadSettingsUI() {
         document.getElementById('max-workers').value = state.settings.maxWorkers || 4;
         document.getElementById('workers-value').textContent = state.settings.maxWorkers || 4;
         document.getElementById('default-quality').value = state.settings.defaultQuality;
+        const manualQuality = document.getElementById('manual-quality');
+        if (manualQuality) {
+            manualQuality.value = String(state.settings.defaultQuality);
+        }
 
         const qualitySelect = document.getElementById('quality-select');
         if (qualitySelect) {
@@ -1630,6 +2107,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // Back button
     document.getElementById('back-btn').addEventListener('click', backToSearch);
 
+    // Manual import
+    document.getElementById('manual-release-json').addEventListener('input', updateManualBrowserSnippet);
+    document.getElementById('manual-session').addEventListener('input', updateManualBrowserSnippet);
+    document.getElementById('manual-parse-btn').addEventListener('click', parseManualImport);
+    document.getElementById('manual-copy-snippet-btn').addEventListener('click', copyManualBrowserSnippet);
+    document.getElementById('manual-select-all-btn').addEventListener('click', selectAllManualImportEpisodes);
+    document.getElementById('manual-select-range-btn').addEventListener('click', () => {
+        document.getElementById('manual-range-picker').style.display = 'block';
+    });
+    document.getElementById('manual-clear-btn').addEventListener('click', clearManualImport);
+    document.getElementById('manual-cancel-range-btn').addEventListener('click', () => {
+        document.getElementById('manual-range-picker').style.display = 'none';
+    });
+    document.getElementById('manual-apply-range-btn').addEventListener('click', () => {
+        const start = parseFloat(document.getElementById('manual-range-start').value);
+        const end = parseFloat(document.getElementById('manual-range-end').value);
+        selectManualImportRange(start, end);
+        document.getElementById('manual-range-picker').style.display = 'none';
+    });
+    document.getElementById('manual-download-btn').addEventListener('click', downloadManualImportSelection);
+
     // Episode selection buttons
     document.getElementById('select-all-btn').addEventListener('click', selectAllEpisodes);
     document.getElementById('deselect-all-btn').addEventListener('click', deselectAllEpisodes);
@@ -1796,6 +2294,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial load
     loadSettingsUI();
+    updateManualBrowserSnippet();
     switchView(state.currentView);
 });
 

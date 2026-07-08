@@ -15,7 +15,7 @@ from typing import Optional
 from api.models import (
     SearchResponse, AnimeSearchResult, AnimeDetails, Episode,
     EpisodesResponse, EpisodeLinksResponse, DownloadOption,
-    DownloadRequest, BatchDownloadRequest, DownloadQueueStatus,
+    DownloadRequest, BatchDownloadRequest, ManualImportDownloadRequest, DownloadQueueStatus,
     AppSettings, UpdateSettingsRequest, DownloadProgress
 )
 from core.animepahe import AnimePaheClient, AnimePaheError
@@ -36,6 +36,14 @@ app_config: Optional[Config] = None
 
 # WebSocket connections for progress updates
 connected_websockets: set[WebSocket] = set()
+
+
+def _is_kwik_session_rejected_error(error: Exception) -> bool:
+    message = str(error)
+    return (
+        "Kwik still returned HTTP 403" in message
+        or "Cloudflare rejected the exported browser session" in message
+    )
 
 
 def _format_bytes(size: int) -> str:
@@ -317,6 +325,10 @@ async def start_download(request: DownloadRequest):
                             }
                         )
                     except Exception as e:
+                        if _is_kwik_session_rejected_error(e):
+                            raise RuntimeError(
+                                f"No links resolved (link_expired): Episode {episode.episode}: {e}"
+                            )
                         link_errors.append(str(e))
                     processed += 1
                     await broadcast_link_progress(processed, total)
@@ -362,6 +374,96 @@ async def start_download(request: DownloadRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start download: {e}")
+
+
+@router.post("/download/manual-import")
+async def start_manual_import_download(request: ManualImportDownloadRequest):
+    if not animepahe_client or not download_manager:
+        raise HTTPException(status_code=500, detail="Client not initialized")
+
+    imported_episodes = []
+    seen_sessions: set[str] = set()
+    for episode in request.episodes:
+        if episode.anime_session and episode.anime_session != request.anime_session:
+            raise HTTPException(
+                status_code=400,
+                detail="Imported episode metadata does not match the provided anime session",
+            )
+        if episode.session in seen_sessions:
+            continue
+        seen_sessions.add(episode.session)
+        imported_episodes.append(episode)
+
+    if not imported_episodes:
+        raise HTTPException(status_code=400, detail="No valid imported episodes found")
+
+    async def process_and_queue():
+        total = len(imported_episodes)
+        processed = 0
+        try:
+            link_errors: list[str] = []
+            resolved_links: list[dict] = []
+            for episode in imported_episodes:
+                try:
+                    options = list(episode.options)
+                    if not options:
+                        raise RuntimeError(
+                            "No imported pahe.win options found. Run the generated browser console "
+                            "command and paste its enhanced JSON output."
+                        )
+                    selected = _select_download_option(options, request.resolution)
+                    direct_link = await animepahe_client.get_direct_download_link(selected.pahe_link)
+                    resolved_links.append(
+                        {
+                            "episode": episode.episode,
+                            "session": episode.session,
+                            "resolution": selected.resolution,
+                            "direct_link": direct_link,
+                        }
+                    )
+                except Exception as e:
+                    if _is_kwik_session_rejected_error(e):
+                        raise RuntimeError(
+                            f"No links resolved (link_expired): Episode {episode.episode}: {e}"
+                        )
+                    error_text = f"Episode {episode.episode}: {e}"
+                    link_errors.append(error_text)
+                processed += 1
+                await broadcast_link_progress(processed, total)
+
+            if resolved_links:
+                resolved_links.sort(key=lambda x: float(x.get("episode", 0)))
+
+            added_count = 0
+            for link_info in resolved_links:
+                task = await download_manager.add_task(
+                    url=link_info["direct_link"],
+                    anime_title=request.anime_title,
+                    episode=link_info["episode"],
+                    resolution=link_info["resolution"],
+                    anime_session=request.anime_session,
+                    episode_session=link_info.get("session"),
+                )
+                if task:
+                    added_count += 1
+
+            if added_count == 0 and link_errors:
+                first_error = link_errors[0]
+                reason, detail = classify_failure(first_error)
+                raise RuntimeError(f"No links resolved ({reason}): {detail}")
+
+            await broadcast_status()
+        except Exception as e:
+            logger.error("Error processing manual import download links: %s", e)
+            await broadcast_link_error(str(e), request.anime_title)
+
+    asyncio.create_task(process_and_queue())
+    return {
+        "status": "queued",
+        "message": f"Started processing {len(imported_episodes)} imported episodes",
+        "added_count": 0,
+        "tasks": [],
+    }
 
 
 @router.post("/download/batch")

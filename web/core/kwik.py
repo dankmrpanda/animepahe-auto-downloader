@@ -41,6 +41,7 @@ class KwikPahe:
         )
         self.cookie_file = os.environ.get("KWIK_COOKIE_FILE")
         self._cookie_clients_loaded: set[int] = set()
+        self._cookie_load_summaries: dict[int, dict[str, object]] = {}
     
     def _base_convert(self, input_str: str, from_base: int, to_base: int) -> int:
         """
@@ -180,6 +181,7 @@ class KwikPahe:
             jar = MozillaCookieJar(str(path))
             jar.load(ignore_discard=True, ignore_expires=True)
             loaded = 0
+            names: set[str] = set()
             for cookie in jar:
                 domain = (cookie.domain or "").lstrip(".").lower()
                 if not domain.startswith("kwik."):
@@ -191,11 +193,22 @@ class KwikPahe:
                     path=cookie.path or "/",
                 )
                 loaded += 1
+                names.add(cookie.name)
+            self._cookie_load_summaries[client_id] = {
+                "count": loaded,
+                "has_cf_clearance": "cf_clearance" in names,
+                "has_kwik_session": "kwik_session" in names,
+            }
             if loaded:
                 logger.info("Loaded %d Kwik cookies from %s", loaded, path)
             else:
                 logger.warning("No Kwik cookies found in %s", path)
         except (FileNotFoundError, LoadError, OSError) as exc:
+            self._cookie_load_summaries[client_id] = {
+                "count": 0,
+                "has_cf_clearance": False,
+                "has_kwik_session": False,
+            }
             logger.warning("Could not load KWIK_COOKIE_FILE=%s: %s", path, exc)
         finally:
             self._cookie_clients_loaded.add(client_id)
@@ -237,10 +250,26 @@ class KwikPahe:
         
         if last_status == 403 and urlparse(url).netloc.endswith("kwik.cx"):
             if self.cookie_file:
+                summary = self._cookie_load_summaries.get(id(client), {})
+                loaded_count = int(summary.get("count") or 0)
+                has_cf_clearance = bool(summary.get("has_cf_clearance"))
+                has_kwik_session = bool(summary.get("has_kwik_session"))
+                if loaded_count:
+                    cookie_detail = (
+                        f"Loaded {loaded_count} Kwik cookies from KWIK_COOKIE_FILE "
+                        f"(cf_clearance={'yes' if has_cf_clearance else 'no'}, "
+                        f"kwik_session={'yes' if has_kwik_session else 'no'}), "
+                        "but Kwik still returned HTTP 403. This usually means Cloudflare "
+                        "rejected the exported browser session. Refresh cookies.txt and "
+                        "user-agent.txt from the same browser session, confirm the browser "
+                        "can still open the Kwik page on this same IP, then fully restart "
+                        "the app."
+                    )
+                    raise KwikDecodeError(cookie_detail)
                 raise KwikDecodeError(
-                    "Kwik returned HTTP 403 with the configured KWIK_COOKIE_FILE. "
-                    "Refresh the cookie export from a browser session on the same IP "
-                    "and make sure it contains current kwik.cx cookies."
+                    "Kwik returned HTTP 403 with KWIK_COOKIE_FILE configured, but no usable "
+                    "Kwik cookies were loaded from it. Export fresh kwik.cx cookies in "
+                    "Netscape format and restart the app."
                 )
             raise KwikDecodeError(
                 "Kwik returned HTTP 403 before the page could be decoded. The browser trace "

@@ -4,6 +4,7 @@
 # from being accidentally committed
 # -------------------------------
 cookies.txt
+user-agent.txt
 # Python virtual environments
 env/
 venv/

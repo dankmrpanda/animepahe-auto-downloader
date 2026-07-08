@@ -34,6 +34,15 @@
                         </svg>
                         Search
                     </button>
+                    <button class="nav-btn" data-view="manual">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14,2 14,8 20,8"/>
+                            <path d="M9 15h6"/>
+                            <path d="M9 18h6"/>
+                        </svg>
+                        Manual
+                    </button>
                     <button class="nav-btn" data-view="downloads">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -154,6 +163,102 @@
                                     <line x1="12" y1="15" x2="12" y2="3"/>
                                 </svg>
                                 Download Selected
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Manual Import View -->
+            <section class="view" id="manual-view">
+                <div class="manual-section">
+                    <h1 class="page-title">Manual Import</h1>
+                    <p class="page-subtitle">Paste AnimePahe release API JSON from your browser session to bulk download without search</p>
+
+                    <div class="manual-card">
+                        <div class="manual-steps">
+                            <div class="manual-step"><strong>1</strong><span>Open the anime page in AnimePahe after passing Cloudflare.</span></div>
+                            <div class="manual-step"><strong>2</strong><span>Copy the anime URL or the UUID after <code>/anime/</code>.</span></div>
+                            <div class="manual-step"><strong>3</strong><span>Paste the <code>api?m=release</code> JSON below to generate a console command.</span></div>
+                            <div class="manual-step"><strong>4</strong><span>Run the command on AnimePahe, then paste the enhanced JSON output into the second box.</span></div>
+                        </div>
+                        <div class="manual-fallback">
+                            <div>
+                                <strong>Browser console command required</strong>
+                                <p>The command is generated from the release API JSON and automatically copies enhanced JSON with <code>pahe.win</code> options.</p>
+                            </div>
+                            <button class="btn btn-outline" id="manual-copy-snippet-btn">Copy Snippet</button>
+                        </div>
+                        <textarea id="manual-browser-snippet" class="manual-snippet" readonly spellcheck="false"></textarea>
+
+                        <div class="manual-form-grid">
+                            <div class="manual-field">
+                                <label for="manual-title">Anime Title</label>
+                                <input type="text" id="manual-title" placeholder="Anime title">
+                            </div>
+                            <div class="manual-field">
+                                <label for="manual-session">Anime URL or Session UUID</label>
+                                <input type="text" id="manual-session" placeholder="https://animepahe.ru/anime/...">
+                            </div>
+                            <div class="manual-field">
+                                <label for="manual-quality">Quality</label>
+                                <select id="manual-quality">
+                                    <option value="0">Highest Available</option>
+                                    <option value="1080">1080p</option>
+                                    <option value="720">720p</option>
+                                    <option value="480">480p</option>
+                                    <option value="360">360p</option>
+                                    <option value="-1">Lowest Available</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="manual-field">
+                            <label for="manual-release-json">Release API JSON from Network</label>
+                            <textarea id="manual-release-json" rows="8" spellcheck="false" placeholder='Paste one or more AnimePahe release API JSON responses, for example {"data":[{"episode":1,"session":"..."}]}'></textarea>
+                        </div>
+
+                        <div class="manual-field">
+                            <label for="manual-json">Enhanced JSON from Console Command</label>
+                            <textarea id="manual-json" rows="10" spellcheck="false" placeholder='Paste the copied console output here. It must include per-episode "options" with pahe_link values.'></textarea>
+                        </div>
+
+                        <div class="manual-actions">
+                            <button class="btn btn-outline" id="manual-parse-btn">Parse Episodes</button>
+                            <button class="btn btn-outline" id="manual-select-all-btn" disabled>Select All</button>
+                            <button class="btn btn-outline" id="manual-select-range-btn" disabled>Select Range</button>
+                            <button class="btn btn-outline" id="manual-clear-btn">Clear</button>
+                        </div>
+
+                        <div class="range-picker" id="manual-range-picker" style="display: none;">
+                            <div class="range-inputs">
+                                <div class="input-group">
+                                    <label for="manual-range-start">From Episode:</label>
+                                    <input type="number" id="manual-range-start" min="1" value="1">
+                                </div>
+                                <div class="input-group">
+                                    <label for="manual-range-end">To Episode:</label>
+                                    <input type="number" id="manual-range-end" min="1" value="12">
+                                </div>
+                                <button class="btn btn-primary" id="manual-apply-range-btn">Apply Range</button>
+                                <button class="btn btn-outline" id="manual-cancel-range-btn">Cancel</button>
+                            </div>
+                        </div>
+
+                        <div class="manual-import-summary" id="manual-import-summary">No imported episodes</div>
+                        <div class="manual-episodes-grid" id="manual-episodes-grid"></div>
+
+                        <div class="episodes-footer">
+                            <div class="selection-info">
+                                <span id="manual-selected-count">0</span> imported episodes selected
+                            </div>
+                            <button class="btn btn-primary btn-large" id="manual-download-btn" disabled>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7,10 12,15 17,10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Download Imported
                             </button>
                         </div>
                     </div>
