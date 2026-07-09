@@ -10,51 +10,72 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 import subprocess
-from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Body,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from typing import Optional
 
+
 from api.models import (
-    SearchResponse, AnimeSearchResult, AnimeDetails, Episode,
-    EpisodesResponse, EpisodeLinksResponse, DownloadOption,
-    DownloadRequest, BatchDownloadRequest, ManualImportDownloadRequest, DownloadQueueStatus,
-    AppSettings, UpdateSettingsRequest, DownloadProgress
+    SearchResponse,
+    AnimeSearchResult,
+    AnimeDetails,
+    Episode,
+    EpisodesResponse,
+    EpisodeLinksResponse,
+    DownloadOption,
+    DownloadRequest,
+    BatchDownloadRequest,
+    ManualImportDownloadRequest,
+    DownloadQueueStatus,
+    AppSettings,
+    UpdateSettingsRequest,
+    DownloadProgress,
 )
 from core.animepahe import AnimePaheClient, AnimePaheError
 from core.downloader import DownloadManager, DownloadTask, classify_failure
 from core.config import Config, save_config
 from core.paths import PathSafetyError, normalize_download_path
 from core import state_store
-from core.diagnostics import build_health_payload, collect_recent_errors, run_environment_checks
+from core.diagnostics import (
+    build_health_payload,
+    collect_recent_errors,
+    run_environment_checks,
+)
 
 logger = logging.getLogger(__name__)
 
+
 router = APIRouter(prefix="/api", tags=["api"])
+
 
 # Initialize clients (will be set by main.py)
 animepahe_client: Optional[AnimePaheClient] = None
 download_manager: Optional[DownloadManager] = None
 app_config: Optional[Config] = None
 
+
 # WebSocket connections for progress updates
 connected_websockets: set[WebSocket] = set()
 
 
-def _format_bytes(size: int) -> str:
-    if size < 1024:
-        return f"{size} B"
-    if size < 1024 * 1024:
-        return f"{size / 1024:.1f} KB"
-    if size < 1024 * 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f} MB"
-    return f"{size / (1024 * 1024 * 1024):.2f} GB"
+# Strong references to fire-and-forget background tasks (episode queueing). The
+# event loop only keeps weak references, so without this an in-flight queueing
+# task can be garbage-collected mid-run and silently stop enqueuing episodes.
+_background_tasks: set[asyncio.Task] = set()
 
 
-def _disk_space_error(preflight: dict) -> str:
-    return (
-        "Insufficient disk space: "
-        f"required {_format_bytes(preflight['required_with_margin_bytes'])} "
-        f"(including safety margin), available {_format_bytes(preflight['free_bytes'])}"
-    )
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def init_clients(client: AnimePaheClient, manager: DownloadManager, config: Config):
@@ -71,17 +92,23 @@ def init_clients(client: AnimePaheClient, manager: DownloadManager, config: Conf
             await broadcast_status()
 
     download_manager.add_progress_callback(progress_callback)
-    download_manager.set_link_resolver(lambda task: _resolve_task_download_link(task, client))
+    download_manager.set_link_resolver(
+        lambda task: _resolve_task_download_link(task, client)
+    )
 
 
 # ============= WebSocket Broadcast Helpers =============
+
 
 async def _broadcast(message: dict):
     """Send a message to all connected WebSocket clients."""
     if not connected_websockets:
         return
     disconnected = set()
-    for ws in connected_websockets:
+    # Iterate a snapshot: connections can be added/removed while we await
+    # send_json below, and mutating the live set mid-iteration raises
+    # "Set changed size during iteration".
+    for ws in list(connected_websockets):
         try:
             await ws.send_json(message)
         except Exception:
@@ -110,27 +137,36 @@ async def broadcast_link_progress(processed: int, total: int):
 async def broadcast_settings():
     if not download_manager:
         return
-    await _broadcast({
-        "type": "settings",
-        "settings": {
-            "download_path": download_manager.download_path,
-            "max_workers": download_manager.max_workers,
-        },
-    })
+    await _broadcast(
+        {
+            "type": "settings",
+            "settings": {
+                "download_path": download_manager.download_path,
+                "max_workers": download_manager.max_workers,
+                "default_resolution": (
+                    app_config.default_resolution if app_config else 0
+                ),
+            },
+        }
+    )
 
 
 async def broadcast_link_error(error_msg: str, anime_title: str):
     reason, detail = classify_failure(error_msg)
-    await _broadcast({
-        "type": "link_error",
-        "error": error_msg,
-        "reason": reason,
-        "detail": detail,
-        "anime_title": anime_title,
-    })
+    await _broadcast(
+        {
+            "type": "link_error",
+            "error": error_msg,
+            "reason": reason,
+            "detail": detail,
+            "anime_title": anime_title,
+        }
+    )
 
 
-def _select_download_option(options: list[DownloadOption], target_resolution: int) -> DownloadOption:
+def _select_download_option(
+    options: list[DownloadOption], target_resolution: int
+) -> DownloadOption:
     if not options:
         raise ValueError("No download options available")
     if target_resolution == 0:
@@ -143,13 +179,19 @@ def _select_download_option(options: list[DownloadOption], target_resolution: in
     return max(options, key=lambda x: x.resolution)
 
 
-async def _resolve_task_download_link(task: DownloadTask, client: AnimePaheClient) -> dict:
+async def _resolve_task_download_link(
+    task: DownloadTask, client: AnimePaheClient
+) -> dict:
     if task.download_options:
         options = [DownloadOption(**option) for option in task.download_options]
     else:
         if not task.anime_session or not task.episode_session:
-            raise RuntimeError("Task is missing AnimePahe metadata required to resolve the download link")
-        options = await client.get_episode_download_options(task.anime_session, task.episode_session)
+            raise RuntimeError(
+                "Task is missing AnimePahe metadata required to resolve the download link"
+            )
+        options = await client.get_episode_download_options(
+            task.anime_session, task.episode_session
+        )
 
     if not options:
         raise RuntimeError("No download options found")
@@ -165,7 +207,15 @@ async def _resolve_task_download_link(task: DownloadTask, client: AnimePaheClien
 def _normalize_import_task(raw: dict) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     status = str(raw.get("status") or "pending").strip().lower()
-    if status not in {"pending", "downloading", "completed", "failed", "stopped", "stopping", "pausing"}:
+    if status not in {
+        "pending",
+        "downloading",
+        "completed",
+        "failed",
+        "stopped",
+        "stopping",
+        "pausing",
+    }:
         status = "pending"
 
     retry_count = int(raw.get("retry_count") or 0)
@@ -207,6 +257,7 @@ def _normalize_import_task(raw: dict) -> dict:
 
 # ============= Search Routes =============
 
+
 @router.get("/search", response_model=SearchResponse)
 async def search_anime(q: str = Query(..., min_length=1, description="Search query")):
     if not animepahe_client:
@@ -214,12 +265,22 @@ async def search_anime(q: str = Query(..., min_length=1, description="Search que
     try:
         results = await animepahe_client.search(q)
         return SearchResponse(
-            results=[AnimeSearchResult(
-                session=r.session, title=r.title, type=r.type,
-                episodes=r.episodes, status=r.status, season=r.season,
-                year=r.year, score=r.score, poster=r.poster,
-            ) for r in results],
-            query=q, count=len(results),
+            results=[
+                AnimeSearchResult(
+                    session=r.session,
+                    title=r.title,
+                    type=r.type,
+                    episodes=r.episodes,
+                    status=r.status,
+                    season=r.season,
+                    year=r.year,
+                    score=r.score,
+                    poster=r.poster,
+                )
+                for r in results
+            ],
+            query=q,
+            count=len(results),
         )
     except AnimePaheError as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -228,7 +289,9 @@ async def search_anime(q: str = Query(..., min_length=1, description="Search que
 
 
 @router.get("/search/posters")
-async def get_mal_posters(titles: str = Query(..., description="Pipe-separated list of anime titles")):
+async def get_mal_posters(
+    titles: str = Query(..., description="Pipe-separated list of anime titles")
+):
     if not animepahe_client:
         raise HTTPException(status_code=500, detail="Client not initialized")
     title_list = [t.strip() for t in titles.split("|") if t.strip()]
@@ -237,6 +300,7 @@ async def get_mal_posters(titles: str = Query(..., description="Pipe-separated l
 
 
 # ============= Anime Routes =============
+
 
 @router.get("/anime/{session}", response_model=AnimeDetails)
 async def get_anime_details(session: str):
@@ -264,23 +328,45 @@ async def get_episodes(
             all_eps = await animepahe_client.get_all_episodes(session)
             return EpisodesResponse(
                 anime_session=session,
-                episodes=[Episode(
-                    id=e.id, episode=e.episode, episode_display=e.episode_display,
-                    title=e.title, snapshot=e.snapshot, duration=e.duration,
-                    session=e.session, filler=e.filler, created_at=e.created_at,
-                ) for e in all_eps],
-                page=1, total_pages=1, total_episodes=len(all_eps),
+                episodes=[
+                    Episode(
+                        id=e.id,
+                        episode=e.episode,
+                        episode_display=e.episode_display,
+                        title=e.title,
+                        snapshot=e.snapshot,
+                        duration=e.duration,
+                        session=e.session,
+                        filler=e.filler,
+                        created_at=e.created_at,
+                    )
+                    for e in all_eps
+                ],
+                page=1,
+                total_pages=1,
+                total_episodes=len(all_eps),
             )
         else:
             episodes, total_pages = await animepahe_client.get_episodes(session, page)
             return EpisodesResponse(
                 anime_session=session,
-                episodes=[Episode(
-                    id=e.id, episode=e.episode, episode_display=e.episode_display,
-                    title=e.title, snapshot=e.snapshot, duration=e.duration,
-                    session=e.session, filler=e.filler, created_at=e.created_at,
-                ) for e in episodes],
-                page=page, total_pages=total_pages, total_episodes=len(episodes),
+                episodes=[
+                    Episode(
+                        id=e.id,
+                        episode=e.episode,
+                        episode_display=e.episode_display,
+                        title=e.title,
+                        snapshot=e.snapshot,
+                        duration=e.duration,
+                        session=e.session,
+                        filler=e.filler,
+                        created_at=e.created_at,
+                    )
+                    for e in episodes
+                ],
+                page=page,
+                total_pages=total_pages,
+                total_episodes=len(episodes),
             )
     except AnimePaheError as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -290,23 +376,38 @@ async def get_episodes(
 
 # ============= Download Routes =============
 
-@router.get("/episode/{anime_session}/{episode_session}/links", response_model=EpisodeLinksResponse)
+
+@router.get(
+    "/episode/{anime_session}/{episode_session}/links",
+    response_model=EpisodeLinksResponse,
+)
 async def get_episode_links(anime_session: str, episode_session: str):
     if not animepahe_client:
         raise HTTPException(status_code=500, detail="Client not initialized")
     try:
-        options = await animepahe_client.get_episode_download_options(anime_session, episode_session)
+        options = await animepahe_client.get_episode_download_options(
+            anime_session, episode_session
+        )
         return EpisodeLinksResponse(
-            anime_session=anime_session, episode_session=episode_session,
-            options=[DownloadOption(
-                pahe_link=o.pahe_link, quality=o.quality, resolution=o.resolution,
-                audio=o.audio, size=o.size,
-            ) for o in options],
+            anime_session=anime_session,
+            episode_session=episode_session,
+            options=[
+                DownloadOption(
+                    pahe_link=o.pahe_link,
+                    quality=o.quality,
+                    resolution=o.resolution,
+                    audio=o.audio,
+                    size=o.size,
+                )
+                for o in options
+            ],
         )
     except AnimePaheError as e:
         raise HTTPException(status_code=502, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get download links: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get download links: {e}"
+        )
 
 
 @router.post("/download")
@@ -315,7 +416,9 @@ async def start_download(request: DownloadRequest):
         raise HTTPException(status_code=500, detail="Client not initialized")
     try:
         all_episodes = await animepahe_client.get_all_episodes(request.anime_session)
-        episodes_to_download = [e for e in all_episodes if e.session in request.episodes]
+        episodes_to_download = [
+            e for e in all_episodes if e.session in request.episodes
+        ]
         if not episodes_to_download:
             raise HTTPException(status_code=400, detail="No valid episodes found")
 
@@ -325,7 +428,9 @@ async def start_download(request: DownloadRequest):
             try:
                 queue_errors: list[str] = []
                 added_count = 0
-                for episode in sorted(episodes_to_download, key=lambda item: float(item.episode)):
+                for episode in sorted(
+                    episodes_to_download, key=lambda item: float(item.episode)
+                ):
                     task = await download_manager.add_task(
                         url="",
                         anime_title=request.anime_title,
@@ -337,7 +442,9 @@ async def start_download(request: DownloadRequest):
                     if task:
                         added_count += 1
                     else:
-                        queue_errors.append(f"Episode {episode.episode}: file is locked or already queued")
+                        queue_errors.append(
+                            f"Episode {episode.episode}: file is locked or already queued"
+                        )
                     processed += 1
                     await broadcast_link_progress(processed, total)
 
@@ -356,7 +463,7 @@ async def start_download(request: DownloadRequest):
                 logger.error("Error preparing download queue: %s", e)
                 await broadcast_link_error(str(e), request.anime_title)
 
-        asyncio.create_task(process_and_queue())
+        _spawn_background(process_and_queue())
         return {
             "status": "queued",
             "message": f"Started processing {len(episodes_to_download)} episodes",
@@ -400,7 +507,9 @@ async def start_manual_import_download(request: ManualImportDownloadRequest):
         try:
             queue_errors: list[str] = []
             added_count = 0
-            for episode in sorted(imported_episodes, key=lambda item: float(item.episode)):
+            for episode in sorted(
+                imported_episodes, key=lambda item: float(item.episode)
+            ):
                 if not episode.options:
                     queue_errors.append(
                         f"Episode {episode.episode}: No imported pahe.win options found. "
@@ -421,7 +530,9 @@ async def start_manual_import_download(request: ManualImportDownloadRequest):
                 if task:
                     added_count += 1
                 else:
-                    queue_errors.append(f"Episode {episode.episode}: file is locked or already queued")
+                    queue_errors.append(
+                        f"Episode {episode.episode}: file is locked or already queued"
+                    )
                 processed += 1
                 await broadcast_link_progress(processed, total)
 
@@ -440,7 +551,7 @@ async def start_manual_import_download(request: ManualImportDownloadRequest):
             logger.error("Error preparing manual import download queue: %s", e)
             await broadcast_link_error(str(e), request.anime_title)
 
-    asyncio.create_task(process_and_queue())
+    _spawn_background(process_and_queue())
     return {
         "status": "queued",
         "message": f"Started processing {len(imported_episodes)} imported episodes",
@@ -459,11 +570,15 @@ async def batch_download(request: BatchDownloadRequest):
         end = request.end_episode or len(all_episodes)
         episodes_to_download = [e for e in all_episodes if start <= e.episode <= end]
         if not episodes_to_download:
-            raise HTTPException(status_code=400, detail="No episodes in specified range")
+            raise HTTPException(
+                status_code=400, detail="No episodes in specified range"
+            )
 
         added_tasks = []
         errors = []
-        for episode in sorted(episodes_to_download, key=lambda item: float(item.episode)):
+        for episode in sorted(
+            episodes_to_download, key=lambda item: float(item.episode)
+        ):
             task = await download_manager.add_task(
                 url="",
                 anime_title=request.anime_title,
@@ -475,11 +590,19 @@ async def batch_download(request: BatchDownloadRequest):
             if task:
                 added_tasks.append(download_manager._task_to_dict(task))
             else:
-                errors.append({"episode": episode.episode, "error": "File is locked or already queued"})
+                errors.append(
+                    {
+                        "episode": episode.episode,
+                        "error": "File is locked or already queued",
+                    }
+                )
         await broadcast_status()
         return {
-            "status": "queued", "added_count": len(added_tasks),
-            "error_count": len(errors), "tasks": added_tasks, "errors": errors,
+            "status": "queued",
+            "added_count": len(added_tasks),
+            "error_count": len(errors),
+            "tasks": added_tasks,
+            "errors": errors,
         }
     except AnimePaheError as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -488,7 +611,9 @@ async def batch_download(request: BatchDownloadRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start batch download: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to start batch download: {e}"
+        )
 
 
 @router.get("/queue")
@@ -546,14 +671,18 @@ async def re_resolve_task(task_id: str):
             download_options=task.download_options,
         )
         if not new_task:
-            raise HTTPException(status_code=409, detail="Task already queued or file already exists")
+            raise HTTPException(
+                status_code=409, detail="Task already queued or file already exists"
+            )
         await broadcast_status()
         return {"re_resolved": True, "task": download_manager._task_to_dict(new_task)}
     except HTTPException:
         raise
     except Exception as e:
         reason, detail = classify_failure(e)
-        raise HTTPException(status_code=502, detail=f"Failed to re-resolve link ({reason}): {detail}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to re-resolve link ({reason}): {detail}"
+        )
 
 
 @router.post("/queue/{task_id}/revalidate")
@@ -563,7 +692,9 @@ async def revalidate_task(task_id: str):
 
     result = download_manager.revalidate_task_file(task_id)
     if not result.get("found"):
-        raise HTTPException(status_code=404, detail=result.get("message", "Task not found"))
+        raise HTTPException(
+            status_code=404, detail=result.get("message", "Task not found")
+        )
     await broadcast_status()
     return result
 
@@ -582,8 +713,10 @@ async def cancel_download(task_id: str):
     if not download_manager:
         raise HTTPException(status_code=500, detail="Download manager not initialized")
     success = await download_manager.cancel_task(task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Task not found or not cancellable")
     await broadcast_status()
-    return {"success": success}
+    return {"success": True}
 
 
 @router.delete("/queue")
@@ -596,6 +729,7 @@ async def cancel_all_downloads():
 
 
 # ============= Queue Pause/Resume =============
+
 
 @router.post("/queue/pause")
 async def pause_queue():
@@ -616,6 +750,7 @@ async def resume_queue():
 
 
 # ============= Settings Routes =============
+
 
 @router.get("/settings", response_model=AppSettings)
 async def get_settings():
@@ -663,6 +798,7 @@ async def update_settings(request: UpdateSettingsRequest):
 
 # ============= Diagnostics / Maintenance =============
 
+
 @router.get("/diagnostics")
 async def get_diagnostics(request: Request):
     if not download_manager:
@@ -670,7 +806,12 @@ async def get_diagnostics(request: Request):
 
     startup_checks = getattr(request.app.state, "startup_checks", {})
     started_at = getattr(request.app.state, "started_at", None)
-    health = build_health_payload(download_manager, startup_checks=startup_checks, started_at=started_at)
+    health = build_health_payload(
+        download_manager,
+        startup_checks=startup_checks,
+        started_at=started_at,
+        animepahe_base_url=animepahe_client.base_url if animepahe_client else None,
+    )
     environment_checks = await run_environment_checks(
         download_manager.download_path,
         animepahe_client.base_url if animepahe_client else None,
@@ -708,60 +849,104 @@ async def import_backup(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail="Download manager not initialized")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid backup payload")
-    if download_manager.active_tasks:
-        raise HTTPException(status_code=409, detail="Stop active downloads before importing backup")
 
     replace_existing = bool(payload.get("replace_existing", True))
-    settings_payload = payload.get("settings", {})
-    tasks_payload = payload.get("tasks", [])
+    raw_settings = payload.get("settings")
+    raw_tasks = payload.get("tasks")
 
-    if settings_payload and not isinstance(settings_payload, dict):
+    if raw_settings is not None and not isinstance(raw_settings, dict):
         raise HTTPException(status_code=400, detail="Invalid settings payload")
-    if tasks_payload and not isinstance(tasks_payload, list):
+    if raw_tasks is not None and not isinstance(raw_tasks, list):
         raise HTTPException(status_code=400, detail="Invalid tasks payload")
+
+    # Detect sections by SHAPE, not mere key presence, so a malformed value like
+    # {"tasks": null} is not treated as a tasks section (which would wipe the
+    # table). Require at least one valid section.
+    has_settings_key = isinstance(raw_settings, dict)
+    has_tasks_key = isinstance(raw_tasks, list)
+    if not has_settings_key and not has_tasks_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Backup payload must include a 'settings' object and/or a 'tasks' list",
+        )
+
+    settings_payload = raw_settings or {}
+    tasks_payload = raw_tasks or []
 
     existing_settings = state_store.load_settings()
     merged_settings = dict(existing_settings)
     if settings_payload:
         merged_settings.update(settings_payload)
 
-    if replace_existing:
-        state_store.replace_settings(merged_settings)
-    elif settings_payload:
-        state_store.save_settings(settings_payload)
+    # Pause and drain in-flight downloads so the import cannot rewrite state or
+    # files under a running worker.
+    was_paused = download_manager.is_paused
+    drained = await download_manager.pause_and_drain()
+    normalized_tasks: list[dict] = []
+    try:
+        if not drained:
+            raise HTTPException(
+                status_code=409,
+                detail="Active downloads did not stop in time; try again in a moment",
+            )
 
-    normalized_tasks = [_normalize_import_task(task) for task in tasks_payload if isinstance(task, dict)]
-    if replace_existing:
-        state_store.replace_download_tasks(normalized_tasks)
-    elif normalized_tasks:
-        state_store.upsert_download_tasks(normalized_tasks)
+        if has_settings_key:
+            if replace_existing:
+                state_store.replace_settings(merged_settings)
+            elif settings_payload:
+                state_store.save_settings(settings_payload)
 
-    # Apply runtime settings from imported data.
-    imported_download_path = merged_settings.get("download_path")
-    imported_max_workers = merged_settings.get("max_workers")
-    imported_default_resolution = merged_settings.get("default_resolution")
+        # Only ever touch the tasks table when the payload actually carries a
+        # "tasks" key. This prevents an empty, settings-only, or malformed import
+        # from silently wiping the entire download queue and history.
+        if has_tasks_key:
+            try:
+                normalized_tasks = [
+                    _normalize_import_task(task)
+                    for task in tasks_payload
+                    if isinstance(task, dict)
+                ]
+            except (ValueError, TypeError) as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid task entry in backup: {e}"
+                )
+            if replace_existing:
+                state_store.replace_download_tasks(normalized_tasks)
+            elif normalized_tasks:
+                state_store.upsert_download_tasks(normalized_tasks)
 
-    if imported_download_path:
-        try:
-            normalized_path = normalize_download_path(str(imported_download_path))
-            download_manager.set_download_path(normalized_path)
+        # Apply runtime settings from imported data.
+        imported_download_path = merged_settings.get("download_path")
+        imported_max_workers = merged_settings.get("max_workers")
+        imported_default_resolution = merged_settings.get("default_resolution")
+
+        if imported_download_path:
+            try:
+                normalized_path = normalize_download_path(str(imported_download_path))
+                download_manager.set_download_path(normalized_path)
+                if app_config:
+                    app_config.download_path = normalized_path
+            except PathSafetyError as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid imported download_path: {e}"
+                )
+
+        if imported_max_workers is not None:
+            await download_manager.adjust_workers(int(imported_max_workers))
             if app_config:
-                app_config.download_path = normalized_path
-        except PathSafetyError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid imported download_path: {e}")
+                app_config.max_workers = int(imported_max_workers)
 
-    if imported_max_workers is not None:
-        await download_manager.adjust_workers(int(imported_max_workers))
+        if imported_default_resolution is not None and app_config:
+            app_config.default_resolution = int(imported_default_resolution)
+
         if app_config:
-            app_config.max_workers = int(imported_max_workers)
+            save_config(app_config)
 
-    if imported_default_resolution is not None and app_config:
-        app_config.default_resolution = int(imported_default_resolution)
+        await download_manager.reload_state_from_store()
+    finally:
+        if not was_paused:
+            download_manager.resume()
 
-    if app_config:
-        save_config(app_config)
-
-    await download_manager.reload_state_from_store()
     await broadcast_settings()
     await broadcast_status()
 
@@ -777,14 +962,25 @@ async def import_backup(payload: dict = Body(...)):
 async def cleanup_maintenance():
     if not download_manager:
         raise HTTPException(status_code=500, detail="Download manager not initialized")
-    if download_manager.active_tasks:
-        raise HTTPException(status_code=409, detail="Stop active downloads before running cleanup")
 
-    stale_files_removed = await download_manager.cleanup_stale_partials()
-    orphan_entries_removed = await download_manager.cleanup_orphan_queue_entries()
-    await download_manager.reload_state_from_store()
+    # Pause and drain in-flight downloads so cleanup cannot delete a live
+    # .partial/.lock or clear state out from under a running worker.
+    was_paused = download_manager.is_paused
+    drained = await download_manager.pause_and_drain()
+    try:
+        if not drained:
+            raise HTTPException(
+                status_code=409,
+                detail="Active downloads did not stop in time; try again in a moment",
+            )
+        stale_files_removed = await download_manager.cleanup_stale_partials()
+        orphan_entries_removed = await download_manager.cleanup_orphan_queue_entries()
+        await download_manager.reload_state_from_store()
+    finally:
+        if not was_paused:
+            download_manager.resume()
+
     await broadcast_status()
-
     return {
         "stale_files_removed": stale_files_removed,
         "orphan_queue_entries_removed": orphan_entries_removed,
@@ -792,6 +988,7 @@ async def cleanup_maintenance():
 
 
 # ============= Open Folder =============
+
 
 @router.get("/settings/open-folder")
 async def open_download_folder():
@@ -813,6 +1010,7 @@ async def open_download_folder():
 
 
 # ============= WebSocket =============
+
 
 @router.websocket("/ws/progress")
 async def websocket_progress(websocket: WebSocket):

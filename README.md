@@ -9,6 +9,10 @@ Full-stack downloader for AnimePahe with a FastAPI backend and a Vite/Vanilla JS
 - Live progress via WebSocket; per-episode stop and Stop All.
 - Retry failed, clear completed, processing placeholder while links are prepared.
 
+## COMMON ERROR FIXES
+- Always generate new cookies from animepahe.com AND kwik.cx (just go to any anime and go to their download page)
+- append the cookies in cookies.txt
+
 ## Prerequisites
 - Python 3.10+
 - UV

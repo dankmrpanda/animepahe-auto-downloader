@@ -4,6 +4,7 @@ SQLite persistence for settings and download queue/history state.
 
 from __future__ import annotations
 
+
 import json
 import sqlite3
 from datetime import datetime
@@ -11,6 +12,13 @@ from pathlib import Path
 from typing import Any
 
 STATE_DB_PATH = Path(__file__).resolve().parents[2] / "app_state.sqlite3"
+
+
+# Paths whose schema/migrations have already been applied this process, so the
+# full CREATE TABLE + PRAGMA table_info introspection is not re-run on every
+# read/write (it was previously executed on each persistence call, including the
+# per-second progress writes during downloads).
+_INITIALIZED_DBS: set[str] = set()
 
 
 def _connect(db_path: Path = STATE_DB_PATH) -> sqlite3.Connection:
@@ -21,60 +29,61 @@ def _connect(db_path: Path = STATE_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    cols = {
+        row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
     if column in cols:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db(db_path: Path = STATE_DB_PATH) -> None:
+    key = str(db_path)
+    if key in _INITIALIZED_DBS:
+        return
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS download_tasks (
-                id TEXT PRIMARY KEY,
-                url TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                anime_title TEXT NOT NULL,
-                anime_session TEXT,
-                episode_session TEXT,
-                download_options TEXT,
-                episode REAL NOT NULL,
-                resolution INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                progress REAL NOT NULL DEFAULT 0,
-                downloaded_bytes INTEGER NOT NULL DEFAULT 0,
-                total_bytes INTEGER NOT NULL DEFAULT 0,
-                speed REAL NOT NULL DEFAULT 0,
-                error TEXT,
-                failure_reason TEXT,
-                failure_detail TEXT,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                max_retries INTEGER NOT NULL DEFAULT 3,
-                terminal INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                started_at TEXT,
-                completed_at TEXT,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_download_tasks_status_updated
-            ON download_tasks(status, updated_at DESC)
-            """
-        )
+        conn.execute("""
+           CREATE TABLE IF NOT EXISTS settings (
+               key TEXT PRIMARY KEY,
+               value TEXT NOT NULL
+           )
+           """)
+        conn.execute("""
+           CREATE TABLE IF NOT EXISTS download_tasks (
+               id TEXT PRIMARY KEY,
+               url TEXT NOT NULL,
+               filename TEXT NOT NULL,
+               anime_title TEXT NOT NULL,
+               anime_session TEXT,
+               episode_session TEXT,
+               download_options TEXT,
+               episode REAL NOT NULL,
+               resolution INTEGER NOT NULL,
+               status TEXT NOT NULL,
+               progress REAL NOT NULL DEFAULT 0,
+               downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+               total_bytes INTEGER NOT NULL DEFAULT 0,
+               speed REAL NOT NULL DEFAULT 0,
+               error TEXT,
+               failure_reason TEXT,
+               failure_detail TEXT,
+               retry_count INTEGER NOT NULL DEFAULT 0,
+               max_retries INTEGER NOT NULL DEFAULT 3,
+               terminal INTEGER NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL,
+               started_at TEXT,
+               completed_at TEXT,
+               updated_at TEXT NOT NULL
+           )
+           """)
+        conn.execute("""
+           CREATE INDEX IF NOT EXISTS idx_download_tasks_status_updated
+           ON download_tasks(status, updated_at DESC)
+           """)
 
         # Lightweight migrations for existing databases.
         _ensure_column(conn, "download_tasks", "anime_session", "TEXT")
@@ -82,6 +91,8 @@ def init_db(db_path: Path = STATE_DB_PATH) -> None:
         _ensure_column(conn, "download_tasks", "download_options", "TEXT")
         _ensure_column(conn, "download_tasks", "failure_reason", "TEXT")
         _ensure_column(conn, "download_tasks", "failure_detail", "TEXT")
+
+    _INITIALIZED_DBS.add(key)
 
 
 def load_settings(db_path: Path = STATE_DB_PATH) -> dict[str, Any]:
@@ -103,19 +114,30 @@ def save_settings(values: dict[str, Any], db_path: Path = STATE_DB_PATH) -> None
         for key, value in values.items():
             conn.execute(
                 """
-                INSERT INTO settings(key, value)
-                VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                """,
+               INSERT INTO settings(key, value)
+               VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value
+               """,
                 (key, json.dumps(value)),
             )
 
 
 def replace_settings(values: dict[str, Any], db_path: Path = STATE_DB_PATH) -> None:
+    # DELETE + INSERT in one transaction so a failure mid-replace cannot leave
+    # the settings table wiped (the sqlite3 connection context manager rolls the
+    # whole transaction back on any exception).
     init_db(db_path)
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM settings")
-    save_settings(values, db_path=db_path)
+        for key, value in values.items():
+            conn.execute(
+                """
+               INSERT INTO settings(key, value)
+               VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value
+               """,
+                (key, json.dumps(value)),
+            )
 
 
 def mark_recoverable_tasks_pending(db_path: Path = STATE_DB_PATH) -> int:
@@ -127,137 +149,97 @@ def mark_recoverable_tasks_pending(db_path: Path = STATE_DB_PATH) -> int:
     with _connect(db_path) as conn:
         cur = conn.execute(
             """
-            UPDATE download_tasks
-            SET status = 'pending',
-                error = 'Recovered after restart',
-                speed = 0,
-                terminal = 0,
-                updated_at = ?
-            WHERE status IN ('downloading', 'stopping', 'pausing')
-            """,
+           UPDATE download_tasks
+           SET status = 'pending',
+               error = 'Recovered after restart',
+               speed = 0,
+               terminal = 0,
+               updated_at = ?
+           WHERE status IN ('downloading', 'stopping', 'pausing')
+           """,
             (now,),
         )
         return cur.rowcount
 
 
+_UPSERT_DOWNLOAD_TASK_SQL = """
+   INSERT INTO download_tasks (
+       id, url, filename, anime_title, anime_session, episode_session, download_options,
+       episode, resolution, status,
+       progress, downloaded_bytes, total_bytes, speed, error,
+       failure_reason, failure_detail,
+       retry_count, max_retries, terminal, created_at,
+       started_at, completed_at, updated_at
+   ) VALUES (
+       :id, :url, :filename, :anime_title, :anime_session, :episode_session, :download_options,
+       :episode, :resolution, :status,
+       :progress, :downloaded_bytes, :total_bytes, :speed, :error,
+       :failure_reason, :failure_detail,
+       :retry_count, :max_retries, :terminal, :created_at,
+       :started_at, :completed_at, :updated_at
+   )
+   ON CONFLICT(id) DO UPDATE SET
+       url=excluded.url,
+       filename=excluded.filename,
+       anime_title=excluded.anime_title,
+       anime_session=excluded.anime_session,
+       episode_session=excluded.episode_session,
+       download_options=excluded.download_options,
+       episode=excluded.episode,
+       resolution=excluded.resolution,
+       status=excluded.status,
+       progress=excluded.progress,
+       downloaded_bytes=excluded.downloaded_bytes,
+       total_bytes=excluded.total_bytes,
+       speed=excluded.speed,
+       error=excluded.error,
+       failure_reason=excluded.failure_reason,
+       failure_detail=excluded.failure_detail,
+       retry_count=excluded.retry_count,
+       max_retries=excluded.max_retries,
+       terminal=excluded.terminal,
+       created_at=excluded.created_at,
+       started_at=excluded.started_at,
+       completed_at=excluded.completed_at,
+       updated_at=excluded.updated_at
+"""
+
+
+def _normalize_task_row(task: dict[str, Any]) -> dict[str, Any]:
+    return dict(task, download_options=task.get("download_options"))
+
+
 def upsert_download_task(task: dict[str, Any], db_path: Path = STATE_DB_PATH) -> None:
-    task = dict(task)
-    task.setdefault("download_options", None)
+    task = _normalize_task_row(task)
     init_db(db_path)
     with _connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO download_tasks (
-                id, url, filename, anime_title, anime_session, episode_session, download_options,
-                episode, resolution, status,
-                progress, downloaded_bytes, total_bytes, speed, error,
-                failure_reason, failure_detail,
-                retry_count, max_retries, terminal, created_at,
-                started_at, completed_at, updated_at
-            ) VALUES (
-                :id, :url, :filename, :anime_title, :anime_session, :episode_session, :download_options,
-                :episode, :resolution, :status,
-                :progress, :downloaded_bytes, :total_bytes, :speed, :error,
-                :failure_reason, :failure_detail,
-                :retry_count, :max_retries, :terminal, :created_at,
-                :started_at, :completed_at, :updated_at
-            )
-            ON CONFLICT(id) DO UPDATE SET
-                url=excluded.url,
-                filename=excluded.filename,
-                anime_title=excluded.anime_title,
-                anime_session=excluded.anime_session,
-                episode_session=excluded.episode_session,
-                download_options=excluded.download_options,
-                episode=excluded.episode,
-                resolution=excluded.resolution,
-                status=excluded.status,
-                progress=excluded.progress,
-                downloaded_bytes=excluded.downloaded_bytes,
-                total_bytes=excluded.total_bytes,
-                speed=excluded.speed,
-                error=excluded.error,
-                failure_reason=excluded.failure_reason,
-                failure_detail=excluded.failure_detail,
-                retry_count=excluded.retry_count,
-                max_retries=excluded.max_retries,
-                terminal=excluded.terminal,
-                created_at=excluded.created_at,
-                started_at=excluded.started_at,
-                completed_at=excluded.completed_at,
-                updated_at=excluded.updated_at
-            """,
-            task,
-        )
+        conn.execute(_UPSERT_DOWNLOAD_TASK_SQL, task)
 
 
-def upsert_download_tasks(tasks: list[dict[str, Any]], db_path: Path = STATE_DB_PATH) -> None:
+def upsert_download_tasks(
+    tasks: list[dict[str, Any]], db_path: Path = STATE_DB_PATH
+) -> None:
     if not tasks:
         return
-    tasks = [dict(task, download_options=task.get("download_options")) for task in tasks]
+    tasks = [_normalize_task_row(task) for task in tasks]
     init_db(db_path)
     with _connect(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT INTO download_tasks (
-                id, url, filename, anime_title, anime_session, episode_session, download_options,
-                episode, resolution, status,
-                progress, downloaded_bytes, total_bytes, speed, error,
-                failure_reason, failure_detail,
-                retry_count, max_retries, terminal, created_at,
-                started_at, completed_at, updated_at
-            ) VALUES (
-                :id, :url, :filename, :anime_title, :anime_session, :episode_session, :download_options,
-                :episode, :resolution, :status,
-                :progress, :downloaded_bytes, :total_bytes, :speed, :error,
-                :failure_reason, :failure_detail,
-                :retry_count, :max_retries, :terminal, :created_at,
-                :started_at, :completed_at, :updated_at
-            )
-            ON CONFLICT(id) DO UPDATE SET
-                url=excluded.url,
-                filename=excluded.filename,
-                anime_title=excluded.anime_title,
-                anime_session=excluded.anime_session,
-                episode_session=excluded.episode_session,
-                download_options=excluded.download_options,
-                episode=excluded.episode,
-                resolution=excluded.resolution,
-                status=excluded.status,
-                progress=excluded.progress,
-                downloaded_bytes=excluded.downloaded_bytes,
-                total_bytes=excluded.total_bytes,
-                speed=excluded.speed,
-                error=excluded.error,
-                failure_reason=excluded.failure_reason,
-                failure_detail=excluded.failure_detail,
-                retry_count=excluded.retry_count,
-                max_retries=excluded.max_retries,
-                terminal=excluded.terminal,
-                created_at=excluded.created_at,
-                started_at=excluded.started_at,
-                completed_at=excluded.completed_at,
-                updated_at=excluded.updated_at
-            """,
-            tasks,
-        )
+        conn.executemany(_UPSERT_DOWNLOAD_TASK_SQL, tasks)
 
 
 def load_download_tasks(db_path: Path = STATE_DB_PATH) -> list[dict[str, Any]]:
     init_db(db_path)
     with _connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id, url, filename, anime_title, anime_session, episode_session, download_options,
-                   episode, resolution, status,
-                   progress, downloaded_bytes, total_bytes, speed, error,
-                   failure_reason, failure_detail,
-                   retry_count, max_retries, terminal, created_at,
-                   started_at, completed_at, updated_at
-            FROM download_tasks
-            ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
-            """
-        ).fetchall()
+        rows = conn.execute("""
+           SELECT id, url, filename, anime_title, anime_session, episode_session, download_options,
+                  episode, resolution, status,
+                  progress, downloaded_bytes, total_bytes, speed, error,
+                  failure_reason, failure_detail,
+                  retry_count, max_retries, terminal, created_at,
+                  started_at, completed_at, updated_at
+           FROM download_tasks
+           ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
+           """).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -272,14 +254,23 @@ def delete_download_tasks(task_ids: list[str], db_path: Path = STATE_DB_PATH) ->
         return
     init_db(db_path)
     with _connect(db_path) as conn:
-        conn.executemany("DELETE FROM download_tasks WHERE id = ?", [(task_id,) for task_id in task_ids])
+        conn.executemany(
+            "DELETE FROM download_tasks WHERE id = ?",
+            [(task_id,) for task_id in task_ids],
+        )
 
 
-def replace_download_tasks(tasks: list[dict[str, Any]], db_path: Path = STATE_DB_PATH) -> None:
+def replace_download_tasks(
+    tasks: list[dict[str, Any]], db_path: Path = STATE_DB_PATH
+) -> None:
+    # DELETE + INSERT in one transaction so a failed/partial import cannot wipe
+    # the existing queue/history and leave nothing in its place.
     init_db(db_path)
+    rows = [_normalize_task_row(task) for task in tasks]
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM download_tasks")
-    upsert_download_tasks(tasks, db_path=db_path)
+        if rows:
+            conn.executemany(_UPSERT_DOWNLOAD_TASK_SQL, rows)
 
 
 def prune_terminal_history(cap: int, db_path: Path = STATE_DB_PATH) -> None:
@@ -293,15 +284,15 @@ def prune_terminal_history(cap: int, db_path: Path = STATE_DB_PATH) -> None:
     with _connect(db_path) as conn:
         conn.execute(
             """
-            DELETE FROM download_tasks
-            WHERE status IN (?, ?, ?)
-              AND id NOT IN (
-                SELECT id
-                FROM download_tasks
-                WHERE status IN (?, ?, ?)
-                ORDER BY datetime(updated_at) DESC
-                LIMIT ?
-              )
-            """,
+           DELETE FROM download_tasks
+           WHERE status IN (?, ?, ?)
+             AND id NOT IN (
+               SELECT id
+               FROM download_tasks
+               WHERE status IN (?, ?, ?)
+               ORDER BY datetime(updated_at) DESC
+               LIMIT ?
+             )
+           """,
             (*terminal, *terminal, cap),
         )

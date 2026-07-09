@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import inspect
 import json
@@ -21,8 +22,15 @@ class ClearanceError(Exception):
 
 ClearanceMinter = Callable[[str, str], Awaitable[dict[str, Any]]]
 
+
 DEFAULT_FRESH_SECONDS = 60 * 60
 VALID_CLEARANCE_MODES = {"off", "cookie", "browser"}
+
+
+# Cloudflare/DDoS-Guard serve interstitial challenges under several status codes,
+# not only 403. 503 ("Just a moment...") and 429 are common; treat them all as
+# possible challenges so the browser clearance minter is actually triggered.
+CHALLENGE_STATUS_CODES = {403, 429, 503}
 
 
 def _repo_root() -> Path:
@@ -30,11 +38,17 @@ def _repo_root() -> Path:
 
 
 def default_store_path() -> Path:
-    return Path(os.environ.get("ANIMEPAHE_CLEARANCE_STORE") or (_repo_root() / "clearance.json"))
+    return Path(
+        os.environ.get("ANIMEPAHE_CLEARANCE_STORE") or (_repo_root() / "clearance.json")
+    )
 
 
 def normalize_clearance_mode(value: str | None = None) -> str:
-    mode = (value or os.environ.get("ANIMEPAHE_CLEARANCE_MODE") or "cookie").strip().lower()
+    mode = (
+        (value or os.environ.get("ANIMEPAHE_CLEARANCE_MODE") or "cookie")
+        .strip()
+        .lower()
+    )
     return mode if mode in VALID_CLEARANCE_MODES else "cookie"
 
 
@@ -89,7 +103,7 @@ def headers_get(headers: Any, name: str) -> str:
 
 
 def looks_like_cf_challenge(status_code: int, headers: Any, body: str = "") -> bool:
-    if status_code != 403:
+    if status_code not in CHALLENGE_STATUS_CODES:
         return False
     if headers_get(headers, "cf-mitigated"):
         return True
@@ -106,7 +120,9 @@ def looks_like_cf_challenge(status_code: int, headers: Any, body: str = "") -> b
     )
 
 
-def cookie_file_summary(path: str | os.PathLike[str] | None, domain_prefixes: Iterable[str]) -> dict[str, Any]:
+def cookie_file_summary(
+    path: str | os.PathLike[str] | None, domain_prefixes: Iterable[str]
+) -> dict[str, Any]:
     summary = {
         "path": str(path) if path else None,
         "exists": False,
@@ -189,7 +205,9 @@ class ClearanceProvider:
         minter: Optional[ClearanceMinter] = None,
     ):
         self._store_path = Path(store_path) if store_path else default_store_path()
-        self._mint_timeout = float(mint_timeout or os.environ.get("ANIMEPAHE_MINT_TIMEOUT") or 90)
+        self._mint_timeout = float(
+            mint_timeout or os.environ.get("ANIMEPAHE_MINT_TIMEOUT") or 90
+        )
         self._minter = minter
         self._state: dict[str, dict[str, Any]] = self._load()
         self._lock = asyncio.Lock()
@@ -211,12 +229,18 @@ class ClearanceProvider:
         host = normalize_host(host)
         target_hosts = compatible_hosts(host)
         for stored_host, pair in self._state.items():
-            if compatible_hosts(stored_host) & target_hosts and pair.get("cf_clearance"):
+            if compatible_hosts(stored_host) & target_hosts and pair.get(
+                "cf_clearance"
+            ):
                 return dict(pair)
         return None
 
     def items(self) -> list[tuple[str, dict[str, Any]]]:
-        return [(host, dict(pair)) for host, pair in self._state.items() if pair.get("cf_clearance")]
+        return [
+            (host, dict(pair))
+            for host, pair in self._state.items()
+            if pair.get("cf_clearance")
+        ]
 
     def clear(self, host: str) -> None:
         host = normalize_host(host)
@@ -255,13 +279,17 @@ class ClearanceProvider:
                     "message": str(exc),
                     "updated_at": time.time(),
                 }
-                raise ClearanceError(f"Cloudflare mint failed for {host}: {exc}") from exc
+                raise ClearanceError(
+                    f"Cloudflare mint failed for {host}: {exc}"
+                ) from exc
 
             cf_clearance = str(pair.get("cf_clearance") or "")
             user_agent = str(pair.get("user_agent") or "")
             actual_host = normalize_host(str(pair.get("host") or host))
             if not cf_clearance or not user_agent:
-                raise ClearanceError("Browser did not return both cf_clearance and user_agent")
+                raise ClearanceError(
+                    "Browser did not return both cf_clearance and user_agent"
+                )
 
             stored_pair = {
                 "cf_clearance": cf_clearance,
@@ -272,30 +300,45 @@ class ClearanceProvider:
             self._state[actual_host] = stored_pair
             if host and host != actual_host:
                 self._state[host] = stored_pair
-            self._last_results[actual_host] = {
+            result_record = {
                 "ok": True,
                 "message": "minted",
                 "updated_at": time.time(),
                 "duration_seconds": round(time.time() - started, 2),
             }
+            # Record under both the resolved and requested host so status()
+            # lookups by either name find the last result.
+            self._last_results[actual_host] = result_record
+            if host and host != actual_host:
+                self._last_results[host] = result_record
             self._save()
             return dict(stored_pair)
 
-    async def _mint_with_configured_browser(self, url: str, host: str) -> dict[str, Any]:
-        browser = (os.environ.get("ANIMEPAHE_BROWSER") or "seleniumbase").strip().lower()
+    async def _mint_with_configured_browser(
+        self, url: str, host: str
+    ) -> dict[str, Any]:
+        browser = (
+            (os.environ.get("ANIMEPAHE_BROWSER") or "seleniumbase").strip().lower()
+        )
         if browser == "seleniumbase":
             return await asyncio.to_thread(self._mint_seleniumbase, url, host)
         if browser == "sidecar":
-            raise ClearanceError("ANIMEPAHE_BROWSER=sidecar is not configured in this build")
+            raise ClearanceError(
+                "ANIMEPAHE_BROWSER=sidecar is not configured in this build"
+            )
         return await self._mint_nodriver(url, host)
 
     async def _mint_nodriver(self, url: str, host: str) -> dict[str, Any]:
         try:
             import nodriver as uc  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on local package
-            raise ClearanceError("nodriver is not installed; run `uv add nodriver`") from exc
+            raise ClearanceError(
+                "nodriver is not installed; run `uv add nodriver`"
+            ) from exc
 
-        headless = (os.environ.get("ANIMEPAHE_BROWSER_HEADLESS") or "false").strip().lower() == "true"
+        headless = (
+            os.environ.get("ANIMEPAHE_BROWSER_HEADLESS") or "false"
+        ).strip().lower() == "true"
         browser_args = []
         if not headless:
             browser_args.append("--window-position=-32000,-32000")
@@ -315,7 +358,9 @@ class ClearanceProvider:
             cf_clearance = ""
             cookie_host = host
             while time.time() < deadline:
-                jar = await _maybe_await(browser.cookies.get_all(requests_cookie_format=True))
+                jar = await _maybe_await(
+                    browser.cookies.get_all(requests_cookie_format=True)
+                )
                 try:
                     cookies = list(jar)
                 except TypeError:
@@ -345,9 +390,13 @@ class ClearanceProvider:
         try:
             from seleniumbase import SB  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on local package
-            raise ClearanceError("seleniumbase is not installed; run `uv add seleniumbase`") from exc
+            raise ClearanceError(
+                "seleniumbase is not installed; run `uv add seleniumbase`"
+            ) from exc
 
-        headless = (os.environ.get("ANIMEPAHE_BROWSER_HEADLESS") or "false").strip().lower() == "true"
+        headless = (
+            os.environ.get("ANIMEPAHE_BROWSER_HEADLESS") or "false"
+        ).strip().lower() == "true"
         deadline = time.time() + self._mint_timeout
         with SB(uc=True, headless=headless) as sb:
             sb.activate_cdp_mode(url)
@@ -369,11 +418,17 @@ class ClearanceProvider:
                 time.sleep(1.5)
         if not cf_clearance:
             raise ClearanceError("Timed out waiting for cf_clearance")
-        return {"cf_clearance": cf_clearance, "user_agent": user_agent, "host": cookie_host}
+        return {
+            "cf_clearance": cf_clearance,
+            "user_agent": user_agent,
+            "host": cookie_host,
+        }
 
     def status(self, hosts: Iterable[str] = ()) -> dict[str, Any]:
         now = time.time()
-        fresh_seconds = float(os.environ.get("ANIMEPAHE_CLEARANCE_FRESH_SECONDS") or DEFAULT_FRESH_SECONDS)
+        fresh_seconds = float(
+            os.environ.get("ANIMEPAHE_CLEARANCE_FRESH_SECONDS") or DEFAULT_FRESH_SECONDS
+        )
         requested = [normalize_host(host) for host in hosts if normalize_host(host)]
         all_hosts = sorted(set(requested) | set(self._state))
         per_host: dict[str, dict[str, Any]] = {}
@@ -423,18 +478,31 @@ class ClearanceProvider:
     def _save(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"hosts": self._state}
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=str(self._store_path.parent),
-            delete=False,
-            prefix=f".{self._store_path.name}.",
-            suffix=".tmp",
-        ) as tmp:
-            json.dump(payload, tmp, indent=2, sort_keys=True)
-            tmp.write("\n")
-            temp_name = tmp.name
-        Path(temp_name).replace(self._store_path)
+        temp_name: str | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(self._store_path.parent),
+                delete=False,
+                prefix=f".{self._store_path.name}.",
+                suffix=".tmp",
+            ) as tmp:
+                temp_name = tmp.name
+                json.dump(payload, tmp, indent=2, sort_keys=True)
+                tmp.write("\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            Path(temp_name).replace(self._store_path)
+            temp_name = None
+        finally:
+            # Clean up the temp file if json.dump or replace failed, so a store
+            # hiccup does not leave orphaned .clearance.json.*.tmp files behind.
+            if temp_name and os.path.exists(temp_name):
+                try:
+                    os.remove(temp_name)
+                except OSError:
+                    pass
 
 
 def chrome_major_from_user_agent(user_agent: str) -> str | None:

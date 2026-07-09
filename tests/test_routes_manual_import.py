@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+
 import asyncio
 from types import SimpleNamespace
+
 
 import httpx
 import pytest
 from fastapi import FastAPI
+
 
 from api import routes
 from api.models import DownloadOption
@@ -24,7 +27,9 @@ class FakeAnimePaheClient:
     async def get_all_episodes(self, anime_session: str):
         return self.episodes
 
-    async def get_episode_download_options(self, anime_session: str, episode_session: str):
+    async def get_episode_download_options(
+        self, anime_session: str, episode_session: str
+    ):
         episode_no = 2 if episode_session == "ep-2" else 1
         return [
             DownloadOption(
@@ -57,7 +62,19 @@ class FakeDownloadManager:
         return SimpleNamespace(id=f"task-{len(self.added)}")
 
     def get_status(self):
-        return {"added": len(self.added)}
+        return {
+            "running": False,
+            "max_workers": 4,
+            "pending_count": 0,
+            "active_count": 0,
+            "completed_count": 0,
+            "failed_count": 0,
+            "active": [],
+            "pending": [],
+            "completed": [],
+            "failed": [],
+            "paused": False,
+        }
 
 
 def make_app(client: FakeAnimePaheClient, manager: FakeDownloadManager) -> FastAPI:
@@ -153,7 +170,9 @@ async def test_manual_import_route_enqueues_in_episode_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_manual_import_missing_options_broadcasts_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_manual_import_missing_options_broadcasts_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     manager = FakeDownloadManager()
     app = make_app(FakeAnimePaheClient(), manager)
     transport = httpx.ASGITransport(app=app)

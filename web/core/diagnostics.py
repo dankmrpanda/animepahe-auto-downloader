@@ -4,13 +4,19 @@ Runtime diagnostics and self-check helpers.
 
 from __future__ import annotations
 
+
 import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
-from core.clearance import cookie_file_summary, default_store_path, normalize_clearance_mode
+
+from core.clearance import (
+    cookie_file_summary,
+    default_store_path,
+    normalize_clearance_mode,
+)
 from core.http_client import IMPERSONATE_TARGET, make_async_session
 
 
@@ -42,7 +48,11 @@ def _check_download_path_writable(download_path: str) -> dict[str, Any]:
         probe.flush()
         probe.close()
         os.remove(probe.name)
-        return {"ok": True, "detail": "Download path is writable", "path": download_path}
+        return {
+            "ok": True,
+            "detail": "Download path is writable",
+            "path": download_path,
+        }
     except Exception as e:
         return {
             "ok": False,
@@ -63,10 +73,16 @@ def _check_disk_space(download_path: str) -> dict[str, Any]:
             "used_bytes": usage.used,
         }
     except Exception as e:
-        return {"ok": False, "detail": f"Disk usage check failed: {e}", "path": download_path}
+        return {
+            "ok": False,
+            "detail": f"Disk usage check failed: {e}",
+            "path": download_path,
+        }
 
 
-async def _check_internet_reachability(test_url: str = "https://animepahe.com") -> dict[str, Any]:
+async def _check_internet_reachability(
+    test_url: str = "https://animepahe.com",
+) -> dict[str, Any]:
     base_url = test_url.rstrip("/")
     probe_url = f"{base_url}/api?m=search&l=1&q=naruto"
     headers = {
@@ -78,7 +94,9 @@ async def _check_internet_reachability(test_url: str = "https://animepahe.com") 
     }
     try:
         async with make_async_session(timeout=8.0) as client:
-            response = await client.get(probe_url, headers=headers, allow_redirects=True)
+            response = await client.get(
+                probe_url, headers=headers, allow_redirects=True
+            )
         json_ok = False
         if response.status_code == 200:
             try:
@@ -104,7 +122,9 @@ async def run_environment_checks(
     animepahe_base_url: str | None = None,
 ) -> dict[str, Any]:
     test_url = animepahe_base_url or "https://animepahe.com"
-    anime_cookie = cookie_file_summary(os.environ.get("ANIMEPAHE_COOKIE_FILE"), ("animepahe.",))
+    anime_cookie = cookie_file_summary(
+        os.environ.get("ANIMEPAHE_COOKIE_FILE"), ("animepahe.",)
+    )
     kwik_cookie = cookie_file_summary(os.environ.get("KWIK_COOKIE_FILE"), ("kwik.",))
     checks: dict[str, Any] = {
         "path_exists": _check_download_path_exists(download_path),
@@ -128,7 +148,9 @@ async def run_environment_checks(
     }
 
 
-def collect_recent_errors(failed_tasks: list[Any], limit: int = 20) -> list[dict[str, Any]]:
+def collect_recent_errors(
+    failed_tasks: list[Any], limit: int = 20
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for task in reversed(failed_tasks[-limit:]):
         items.append(
@@ -145,7 +167,9 @@ def collect_recent_errors(failed_tasks: list[Any], limit: int = 20) -> list[dict
                 "retry_count": task.retry_count,
                 "terminal": task.terminal,
                 "created_at": task.created_at.isoformat() if task.created_at else None,
-                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+                "completed_at": (
+                    task.completed_at.isoformat() if task.completed_at else None
+                ),
             }
         )
     return items
@@ -155,6 +179,7 @@ def build_health_payload(
     download_manager: Any,
     startup_checks: dict[str, Any] | None = None,
     started_at: str | None = None,
+    animepahe_base_url: str | None = None,
 ) -> dict[str, Any]:
     manager_ready = bool(download_manager)
     running = bool(download_manager._running) if manager_ready else False
@@ -181,8 +206,13 @@ def build_health_payload(
         "max_workers": download_manager.max_workers if manager_ready else None,
         "metrics": metrics,
         "queue": queue_status,
-        "animepahe_base_url": (startup_checks or {}).get("animepahe_base_url"),
-        "curl_impersonate": (startup_checks or {}).get("curl_impersonate", IMPERSONATE_TARGET),
-        "clearance_mode": (startup_checks or {}).get("clearance_mode", normalize_clearance_mode()),
+        "animepahe_base_url": animepahe_base_url
+        or (startup_checks or {}).get("animepahe_base_url"),
+        "curl_impersonate": (startup_checks or {}).get(
+            "curl_impersonate", IMPERSONATE_TARGET
+        ),
+        "clearance_mode": (startup_checks or {}).get(
+            "clearance_mode", normalize_clearance_mode()
+        ),
         "startup_checks": startup_checks or {},
     }

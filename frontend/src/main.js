@@ -27,6 +27,7 @@ const state = {
     searchHighlightIndex: -1,
     speedHistory: {},
     lastActiveAndPending: 0,
+    progressBaselineCompleted: null,
     lastQueueAnnouncement: '',
     notificationsPermission: 'default',
     manualImport: {
@@ -226,8 +227,18 @@ const API = {
     },
 
     async _readErrorMessage(res, fallback) {
+        // Read the body exactly once. Calling res.json() and then res.text()
+        // throws "body stream already read", so grab the raw text first and
+        // attempt to parse it as JSON afterwards.
+        let text = '';
         try {
-            const payload = await res.json();
+            text = await res.text();
+        } catch {
+            return fallback;
+        }
+        if (!text || !text.trim()) return fallback;
+        try {
+            const payload = JSON.parse(text);
             if (typeof payload === 'string' && payload.trim()) return payload;
             if (payload?.detail) {
                 if (typeof payload.detail === 'string') return payload.detail;
@@ -235,15 +246,9 @@ const API = {
             }
             if (payload?.error && typeof payload.error === 'string') return payload.error;
         } catch {
-            // Ignore JSON parse errors and fallback to text/fallback.
+            // Not JSON; fall through and return the raw text below.
         }
-        try {
-            const text = await res.text();
-            if (text && text.trim()) return text;
-        } catch {
-            // Ignore text parse errors.
-        }
-        return fallback;
+        return text;
     },
 
     async _cachedGet(path, { ttlMs = 0, cacheKey = path, errorMessage = 'Request failed', fallbackOnError = null } = {}) {
@@ -259,7 +264,7 @@ const API = {
         }
 
         const request = (async () => {
-            const res = await fetch(`${this.baseUrl}${path}`);
+            const res = await fetch(`this.baseUrl{path}`);
             if (!res.ok) {
                 if (fallbackOnError !== null) {
                     return this._clone(fallbackOnError);
@@ -316,10 +321,10 @@ const API = {
 
     async getEpisodes(session, allPages = true) {
         return this._cachedGet(
-            `/anime/${session}/episodes?all_pages=${allPages}`,
+            `/anime/session/episodes?allpages={allPages}`,
             {
                 ttlMs: 600000,
-                cacheKey: `/anime/${session}/episodes?all_pages=${allPages}`,
+                cacheKey: `/anime/session/episodes?allpages={allPages}`,
                 errorMessage: 'Failed to get episodes'
             }
         );
@@ -357,23 +362,6 @@ const API = {
         return res.json();
     },
 
-    async batchDownload(animeSession, animeTitle, startEp, endEp, resolution) {
-        const res = await fetch(`${this.baseUrl}/download/batch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                anime_session: animeSession,
-                anime_title: animeTitle,
-                start_episode: startEp,
-                end_episode: endEp,
-                resolution: resolution
-            })
-        });
-        if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to start batch download'));
-        this._invalidateByPrefix('GET:/queue');
-        return res.json();
-    },
-
     async getQueueStatus({ force = false } = {}) {
         if (force) {
             this._invalidateByPrefix('GET:/queue');
@@ -405,21 +393,21 @@ const API = {
     },
 
     async retryTask(taskId) {
-        const res = await fetch(`${this.baseUrl}/queue/${taskId}/retry`, { method: 'POST' });
+        const res = await fetch(`this.baseUrl/queue/{taskId}/retry`, { method: 'POST' });
         if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to retry task'));
         this._invalidateByPrefix('GET:/queue');
         return res.json();
     },
 
     async reResolveTask(taskId) {
-        const res = await fetch(`${this.baseUrl}/queue/${taskId}/re-resolve`, { method: 'POST' });
+        const res = await fetch(`this.baseUrl/queue/{taskId}/re-resolve`, { method: 'POST' });
         if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to re-resolve link'));
         this._invalidateByPrefix('GET:/queue');
         return res.json();
     },
 
     async revalidateTask(taskId) {
-        const res = await fetch(`${this.baseUrl}/queue/${taskId}/revalidate`, { method: 'POST' });
+        const res = await fetch(`this.baseUrl/queue/{taskId}/revalidate`, { method: 'POST' });
         if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to validate file'));
         this._invalidateByPrefix('GET:/queue');
         return res.json();
@@ -433,7 +421,7 @@ const API = {
     },
 
     async cancelDownload(taskId) {
-        const res = await fetch(`${this.baseUrl}/queue/${taskId}`, { method: 'DELETE' });
+        const res = await fetch(`this.baseUrl/queue/{taskId}`, { method: 'DELETE' });
         if (!res.ok) throw new Error(await this._readErrorMessage(res, 'Failed to cancel download'));
         this._invalidateByPrefix('GET:/queue');
         return res.json();
@@ -543,7 +531,7 @@ function updateConnectionIndicator(status) {
 
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws/progress`;
+    const wsUrl = `protocol//{window.location.host}/api/ws/progress`;
 
     state.ws = new WebSocket(wsUrl);
 
@@ -624,7 +612,7 @@ function updateLinkProgress(processed, total) {
     if (spinner) {
         const p = spinner.querySelector('p');
         if (p) {
-            p.textContent = `Preparing download queue: ${processed}/${total}...`;
+            p.textContent = `Preparing download queue: processed/{total}...`;
         }
     }
     if (total > 0 && processed >= total) {
@@ -643,7 +631,19 @@ function handleLinkError(error, animeTitle, reason = null, detail = null) {
 
 function handleSettingsBroadcast(settings) {
     if (!settings) return;
-    state.settings = normalizeSettingsPayload(settings);
+    // Merge only the fields present in the broadcast so a payload that omits a
+    // field (e.g. default_resolution) cannot reset the user's stored preference.
+    const incoming = {};
+    if (settings.download_path !== undefined || settings.downloadPath !== undefined) {
+        incoming.downloadPath = settings.download_path ?? settings.downloadPath ?? '';
+    }
+    if (settings.max_workers !== undefined || settings.maxWorkers !== undefined) {
+        incoming.maxWorkers = Number(settings.max_workers ?? settings.maxWorkers ?? 4);
+    }
+    if (settings.default_resolution !== undefined || settings.defaultQuality !== undefined) {
+        incoming.defaultQuality = Number(settings.default_resolution ?? settings.defaultQuality ?? 0);
+    }
+    state.settings = { ...state.settings, ...incoming };
     saveSettingsToStorage();
     if (state.currentView === 'settings') {
         document.getElementById('max-workers').value = state.settings.maxWorkers;
@@ -693,8 +693,8 @@ function renderSearchResults(results) {
     }
 
     container.innerHTML = results.map(anime => `
-        <div class="search-result-item" data-session="${anime.session}" data-title="${escapeHtml(anime.title)}" data-poster="${escapeHtml(anime.poster || '')}">
-            <img class="result-poster" src="${anime.poster || ''}" alt="${escapeHtml(anime.title)}" loading="lazy"
+        <div class="search-result-item" data-session="anime.session"data-title="{escapeHtml(anime.title)}" data-poster="${escapeHtml(anime.poster || '')}">
+            <img class="result-poster" src="anime.poster||''"alt="{escapeHtml(anime.title)}" loading="lazy"
                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 140%22%3E%3Crect fill=%22%231a1a1a%22 width=%22100%22 height=%22140%22/%3E%3Ctext x=%2250%22 y=%2270%22 text-anchor=%22middle%22 fill=%22%23555%22 font-size=%2212%22%3ENo Image%3C/text%3E%3C/svg%3E'">
             <div class="result-info">
                 <div class="result-title">${escapeHtml(anime.title)}</div>
@@ -770,7 +770,7 @@ function renderAnimeInfo(anime) {
     const altTitles = [anime.english_title, anime.japanese_title].filter(t => t && t !== anime.title).join(' \u2022 ');
 
     container.innerHTML = `
-        <img class="anime-poster" src="${anime.poster || ''}" alt="${escapeHtml(anime.title)}" loading="lazy"
+        <img class="anime-poster" src="anime.poster||''"alt="{escapeHtml(anime.title)}" loading="lazy"
                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 180 260%22%3E%3Crect fill=%22%231a1a25%22 width=%22180%22 height=%22260%22/%3E%3Ctext x=%2290%22 y=%22130%22 text-anchor=%22middle%22 fill=%22%2371717a%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E'">
         <div class="anime-details">
             <h1 class="anime-title" style="font-size: 2rem; white-space: normal;">${escapeHtml(anime.title)}</h1>
@@ -808,15 +808,19 @@ function renderEpisodes(episodes) {
             data-session="${ep.session}"
             data-episode="${ep.episode}"
             aria-pressed="false"
-            aria-label="Episode ${ep.episode}${ep.filler ? ', filler' : ''}">
+            aria-label="Episode ep.episode{ep.filler ? ', filler' : ''}">
             <span class="episode-number">${ep.episode}</span>
             <span class="episode-label">Episode</span>
         </button>
     `).join('');
 
-    document.getElementById('range-end').max = episodes.length;
-    document.getElementById('range-end').value = Math.min(12, episodes.length);
-    document.getElementById('range-start').max = episodes.length;
+    // Range selection compares against ep.episode numbers (which may not start at
+    // 1 or may be sparse), so bound the inputs by the highest episode number
+    // rather than the count. Mirrors the manual-import view.
+    const maxEpisode = episodes.length ? Math.max(...episodes.map(e => e.episode)) : 1;
+    document.getElementById('range-end').max = maxEpisode;
+    document.getElementById('range-end').value = Math.min(12, maxEpisode);
+    document.getElementById('range-start').max = maxEpisode;
 
     const cards = Array.from(container.querySelectorAll('.episode-card'));
     cards.forEach((card, index) => {
@@ -894,7 +898,7 @@ function updateSelectionCount() {
     const count = state.selectedEpisodes.size;
     document.getElementById('selected-count').textContent = count;
     document.getElementById('download-btn').disabled = count === 0;
-    announceStatus(`${count} episode${count === 1 ? '' : 's'} selected.`);
+    announceStatus(`countepisode{count === 1 ? '' : 's'} selected.`);
 }
 
 function backToSearch() {
@@ -1423,24 +1427,37 @@ function updateTotalProgress(status) {
     const activeCount = (status.active_count || 0) + (status.pending_count || 0);
     if (activeCount === 0) {
         container.style.display = 'none';
+        // Queue is idle: drop the baseline so the next batch starts from ~0%.
+        state.progressBaselineCompleted = null;
         return;
     }
 
     container.style.display = 'flex';
 
-    // Calculate total progress from active tasks
-    const allActive = [...(status.active || []), ...(status.pending || [])];
-    const totalCompleted = status.completed_count || 0;
-    const totalTasks = activeCount + totalCompleted;
+    // status.completed_count is the LIFETIME completed history (capped at 200),
+    // so it must not be used directly as the denominator. Capture a baseline at
+    // the moment a new batch begins and only count completions since then, so a
+    // fresh batch reads ~0% and climbs toward 100% as its tasks finish.
+    const lifetimeCompleted = status.completed_count || 0;
+    if (state.progressBaselineCompleted === null || state.progressBaselineCompleted > lifetimeCompleted) {
+        state.progressBaselineCompleted = lifetimeCompleted;
+    }
+    const sessionCompleted = Math.max(0, lifetimeCompleted - state.progressBaselineCompleted);
 
-    let progressSum = totalCompleted * 100;
-    for (const task of allActive) {
-        progressSum += (task.progress || 0);
+    // Calculate overall progress from the current queue only: active + pending
+    // (pending counts as 0%) plus the completed tasks from this session.
+    const inFlight = [...(status.active || []), ...(status.pending || [])];
+    const totalTasks = activeCount + sessionCompleted;
+
+    let progressSum = sessionCompleted * 100;
+    for (const task of inFlight) {
+        progressSum += Math.max(0, Math.min(100, Number(task.progress) || 0));
     }
     const overallPercent = totalTasks > 0 ? (progressSum / totalTasks) : 0;
+    const clampedPercent = Math.max(0, Math.min(100, overallPercent));
 
-    fill.style.width = `${overallPercent}%`;
-    text.textContent = `${overallPercent.toFixed(0)}%`;
+    fill.style.width = `${clampedPercent}%`;
+    text.textContent = `${clampedPercent.toFixed(0)}%`;
 }
 
 function updatePauseResumeButton() {
@@ -1471,6 +1488,10 @@ function updateDownloadProgress(task) {
     }
 
     const isTerminal = ['completed', 'failed', 'stopped'].includes(task.status);
+    if (isTerminal) {
+        // Prevent state.speedHistory from growing without bound.
+        delete state.speedHistory[task.id];
+    }
     refreshQueueStatus({ force: isTerminal });
 }
 
@@ -1505,9 +1526,25 @@ function getFailureSummary(task) {
     return `${reason}: ${detail}`;
 }
 
+// Markup for the downloads "empty state". Kept as a module-level constant so it
+// can always be re-rendered: the original #downloads-empty node is nested inside
+// #downloads-list and gets destroyed the first time the queue list is populated.
+const EMPTY_DOWNLOADS_HTML = `
+    <div class="empty-state" id="downloads-empty">
+        <div class="empty-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7,10 12,15 17,10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+        </div>
+        <h3>No Downloads</h3>
+        <p>Search for an anime and add episodes to start downloading</p>
+    </div>
+`;
+
 function renderDownloadList(status) {
     const container = document.getElementById('downloads-list');
-    const emptyState = document.getElementById('downloads-empty');
 
     const allItems = [
         ...(status.active || []),
@@ -1521,8 +1558,9 @@ function renderDownloadList(status) {
     }
 
     if (allItems.length === 0) {
-        container.innerHTML = '';
-
+        // #downloads-empty lives INSIDE #downloads-list, so a populated render
+        // (container.innerHTML = ...) destroys it. Rebuild the empty state from
+        // a module-level template instead of cloning a node that may be gone.
         if (state.processingDownloads) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -1536,7 +1574,7 @@ function renderDownloadList(status) {
                 </div>
             `;
         } else {
-            container.appendChild(emptyState.cloneNode(true));
+            container.innerHTML = EMPTY_DOWNLOADS_HTML;
         }
         return;
     }
@@ -1556,7 +1594,7 @@ function renderDownloadList(status) {
                 ${getStatusIcon(task.status)}
             </div>
             <div class="download-info">
-                <div class="download-name">${escapeHtml(task.filename)}${retryInfo}</div>
+                <div class="download-name">escapeHtml(task.filename){retryInfo}</div>
                 <div class="download-details">
                     <span>${escapeHtml(task.anime_title)}</span>
                     <span>EP ${task.episode}</span>
@@ -1756,6 +1794,53 @@ function renderRecentErrors(errors) {
     `).join('');
 }
 
+function renderClearance(clearance) {
+    const body = document.getElementById('diag-clearance-body');
+    if (!body) return;
+
+    if (!clearance || Object.keys(clearance).length === 0) {
+        body.innerHTML = '<p class="hint">No clearance information available</p>';
+        return;
+    }
+
+    const yesNo = (value) => (value ? 'Yes' : 'No');
+    const mode = escapeHtml(String(clearance.clearance_mode ?? 'unknown'));
+    const baseUrl = escapeHtml(String(clearance.base_url ?? '-'));
+    const animeRows = escapeHtml(String(clearance.animepahe_cookie_rows ?? 0));
+    const animeCf = yesNo(clearance.animepahe_has_cf_clearance);
+    const kwikRows = escapeHtml(String(clearance.kwik_cookie_rows ?? 0));
+    const kwikSession = yesNo(clearance.kwik_has_kwik_session);
+
+    let html = `
+        <p>Mode: <strong>${mode}</strong></p>
+        <p>Base URL: <strong>${baseUrl}</strong></p>
+        <p>AnimePahe cookies: <strong>${animeRows}</strong> rows (cf_clearance: ${animeCf})</p>
+        <p>Kwik cookies: <strong>${kwikRows}</strong> rows (kwik_session: ${kwikSession})</p>
+    `;
+
+    const hosts = clearance.hosts && typeof clearance.hosts === 'object' ? clearance.hosts : null;
+    const hostEntries = hosts ? Object.entries(hosts) : [];
+    if (hostEntries.length > 0) {
+        html += '<ul class="diag-list">';
+        for (const [host, info] of hostEntries) {
+            const fresh = info?.clearance_fresh ? 'fresh' : 'stale';
+            const cls = info?.clearance_fresh ? 'ok' : 'fail';
+            const age = Number.isFinite(info?.age_seconds)
+                ? `${Math.round(info.age_seconds)}s ago`
+                : 'never minted';
+            html += `
+                <li class="${cls}">
+                    <strong>${escapeHtml(host)}</strong><br>
+                    clearance: ${yesNo(info?.has_clearance)}, escapeHtml(fresh)({escapeHtml(age)})
+                </li>
+            `;
+        }
+        html += '</ul>';
+    }
+
+    body.innerHTML = html;
+}
+
 function renderDiagnostics(data) {
     const health = data?.health || {};
     const metrics = data?.metrics || {};
@@ -1774,6 +1859,7 @@ function renderDiagnostics(data) {
     document.getElementById('metric-failed').textContent = metrics.downloads_failed ?? 0;
     document.getElementById('metric-retried').textContent = metrics.downloads_retried ?? 0;
 
+    renderClearance(data?.clearance);
     renderEnvironmentChecks(data?.environment_checks);
     renderRecentErrors(data?.recent_errors);
 }
@@ -2202,7 +2288,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const result = await API.retryFailed();
             showToast('info', 'Retrying', `${result.retried_count} downloads queued for retry`);
-            announceStatus(`${result.retried_count} download${result.retried_count === 1 ? '' : 's'} queued for retry.`);
+            announceStatus(`result.retriedcountdownload{result.retried_count === 1 ? '' : 's'} queued for retry.`);
             refreshQueueStatus();
         } catch (error) {
             showToast('error', 'Error', error.message);
@@ -2213,6 +2299,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm('Are you sure you want to stop all downloads?')) return;
         try {
             const result = await API.cancelAllDownloads();
+            state.speedHistory = {};
             showToast('info', 'Stopped', `${result.cancelled_count} downloads stopped`);
             announceStatus(`${result.cancelled_count} downloads stopped.`);
             refreshQueueStatus();
@@ -2224,6 +2311,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('clear-completed-btn').addEventListener('click', async () => {
         try {
             const result = await API.clearCompleted();
+            state.speedHistory = {};
             showToast('info', 'Cleared', `${result.cleared_count} completed downloads cleared`);
             announceStatus(`${result.cleared_count} completed downloads cleared.`);
             refreshQueueStatus();
@@ -2309,3 +2397,5 @@ window.reResolveTask = reResolveTask;
 window.revalidateTask = revalidateTask;
 window.clearSearchHistory = clearSearchHistory;
 window.performSearch = performSearch;
+
+

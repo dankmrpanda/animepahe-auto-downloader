@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
-
 # ============= Search Models =============
+
 
 class AnimeSearchResult(BaseModel):
     """Search result from AnimePahe"""
+
     session: str
     title: str
     type: str = "TV"
@@ -24,6 +25,7 @@ class AnimeSearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     """Response for search endpoint"""
+
     results: list[AnimeSearchResult]
     query: str
     count: int
@@ -31,8 +33,10 @@ class SearchResponse(BaseModel):
 
 # ============= Anime Details Models =============
 
+
 class AnimeDetails(BaseModel):
     """Detailed anime information"""
+
     session: str
     title: str
     total_episodes: int
@@ -51,6 +55,7 @@ class AnimeDetails(BaseModel):
 
 class Episode(BaseModel):
     """Episode information"""
+
     id: int
     episode: float
     episode_display: str
@@ -64,6 +69,7 @@ class Episode(BaseModel):
 
 class EpisodesResponse(BaseModel):
     """Response for episodes endpoint"""
+
     anime_session: str
     episodes: list[Episode]
     page: int
@@ -73,8 +79,10 @@ class EpisodesResponse(BaseModel):
 
 # ============= Download Models =============
 
+
 class DownloadOption(BaseModel):
     """Available download option for an episode"""
+
     pahe_link: str
     quality: str
     resolution: int
@@ -84,6 +92,7 @@ class DownloadOption(BaseModel):
 
 class EpisodeLinksResponse(BaseModel):
     """Response for episode download links"""
+
     anime_session: str
     episode_session: str
     options: list[DownloadOption]
@@ -91,23 +100,36 @@ class EpisodeLinksResponse(BaseModel):
 
 class DownloadRequest(BaseModel):
     """Request to start downloading episodes"""
+
     anime_session: str
     anime_title: str
     episodes: list[str]  # List of episode session IDs
-    resolution: int = Field(default=0, description="0=highest, -1=lowest, or specific like 720")
+    resolution: int = Field(
+        default=0,
+        ge=-1,
+        le=4320,
+        description="0=highest, -1=lowest, or specific like 720",
+    )
 
 
 class BatchDownloadRequest(BaseModel):
     """Request to batch download a range of episodes"""
+
     anime_session: str
     anime_title: str
     start_episode: int = 1
     end_episode: Optional[int] = None  # None = all episodes
-    resolution: int = Field(default=0, description="0=highest, -1=lowest, or specific like 720")
+    resolution: int = Field(
+        default=0,
+        ge=-1,
+        le=4320,
+        description="0=highest, -1=lowest, or specific like 720",
+    )
 
 
 class ImportedDownloadOption(BaseModel):
     """Download option metadata parsed from an AnimePahe play page."""
+
     pahe_link: str = Field(min_length=1)
     quality: str = ""
     resolution: int = 0
@@ -117,6 +139,7 @@ class ImportedDownloadOption(BaseModel):
 
 class ImportedEpisode(BaseModel):
     """Episode metadata copied from AnimePahe release API responses."""
+
     episode: float
     session: str = Field(min_length=1)
     title: str = ""
@@ -130,14 +153,21 @@ class ImportedEpisode(BaseModel):
 
 class ManualImportDownloadRequest(BaseModel):
     """Request to download episodes from manually imported release metadata."""
+
     anime_session: str = Field(min_length=1)
     anime_title: str = Field(min_length=1)
     episodes: list[ImportedEpisode] = Field(min_length=1)
-    resolution: int = Field(default=0, description="0=highest, -1=lowest, or specific like 720")
+    resolution: int = Field(
+        default=0,
+        ge=-1,
+        le=4320,
+        description="0=highest, -1=lowest, or specific like 720",
+    )
 
 
 class DownloadProgress(BaseModel):
     """Progress update for a download"""
+
     id: str
     filename: str
     anime_title: str
@@ -159,6 +189,7 @@ class DownloadProgress(BaseModel):
 
 class DownloadQueueStatus(BaseModel):
     """Current status of download queue"""
+
     running: bool
     max_workers: int
     pending_count: int
@@ -173,8 +204,10 @@ class DownloadQueueStatus(BaseModel):
 
 # ============= Settings Models =============
 
+
 class AppSettings(BaseModel):
     """Application settings"""
+
     download_path: str
     max_workers: int = 4
     default_resolution: int = 0  # 0=highest
@@ -182,33 +215,39 @@ class AppSettings(BaseModel):
 
 class UpdateSettingsRequest(BaseModel):
     """Request to update settings"""
+
     download_path: Optional[str] = None
     max_workers: Optional[int] = Field(default=None, ge=1, le=8)
-    default_resolution: Optional[int] = None
+    default_resolution: Optional[int] = Field(default=None, ge=-1, le=4320)
 
 
 # ============= WebSocket Messages =============
 
+
 class WSMessage(BaseModel):
     """WebSocket message wrapper"""
+
     type: str  # progress, status, error, settings
     data: dict
 
 
 class WSProgressUpdate(BaseModel):
     """WebSocket progress update"""
+
     type: str = "progress"
     task: DownloadProgress
 
 
 class WSStatusUpdate(BaseModel):
     """WebSocket status update"""
+
     type: str = "status"
     queue: DownloadQueueStatus
 
 
 class WSError(BaseModel):
     """WebSocket error message"""
+
     type: str = "error"
     message: str
     details: Optional[str] = None

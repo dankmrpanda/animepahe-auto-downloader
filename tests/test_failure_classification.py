@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+
 from core.downloader import DownloadHTTPError, _is_retryable, classify_failure
 from core.http_client import CurlTimeout
 
 
 def test_classify_http_status_errors() -> None:
     assert classify_failure(DownloadHTTPError(403))[0] == "link_expired"
+    assert classify_failure(DownloadHTTPError(429))[0] == "network"
     assert classify_failure(DownloadHTTPError(500))[0] == "network"
     assert classify_failure(DownloadHTTPError(507))[0] == "disk_full"
 
 
 def test_retryability_matches_transport_and_status() -> None:
     assert _is_retryable(DownloadHTTPError(500))
+    assert _is_retryable(DownloadHTTPError(429)) is True
     assert not _is_retryable(DownloadHTTPError(403))
     assert _is_retryable(CurlTimeout("timed out"))
 

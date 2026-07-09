@@ -5,6 +5,7 @@ Handles file downloads with progress tracking, resume support, and queue managem
 
 from __future__ import annotations
 
+
 import asyncio
 import errno
 import inspect
@@ -12,13 +13,15 @@ import json
 import logging
 import os
 import re
-import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Callable, Any
 
+
 import aiofiles
+
 
 from core.http_client import NETWORK_EXCEPTIONS, make_async_session
 from core.paths import (
@@ -32,6 +35,7 @@ from core import state_store
 
 logger = logging.getLogger(__name__)
 
+
 # Max items kept in completed/failed history
 HISTORY_CAP = 200
 # Seconds with no data before declaring a download stalled
@@ -40,9 +44,6 @@ STALL_TIMEOUT = 30
 BASE_RETRY_BACKOFF_SECONDS = 2
 MAX_RETRY_BACKOFF_SECONDS = 60
 DEFAULT_MAX_RETRIES = 3
-# Disk-space safety policy
-UNKNOWN_EPISODE_SIZE_BYTES = 350 * 1024 * 1024
-DISK_SPACE_SAFETY_MARGIN_BYTES = 512 * 1024 * 1024
 
 
 def _resolution_label(resolution: int) -> str:
@@ -53,11 +54,25 @@ def _resolution_label(resolution: int) -> str:
     return f"{resolution}p"
 
 
+def _episode_token(episode: float) -> str:
+    """Filename-safe episode token that keeps specials (e.g. 1.5) distinct from
+    their integer neighbor (1), avoiding filename collisions/overwrites."""
+    ep = float(episode)
+    if ep.is_integer():
+        return f"{int(ep):02d}"
+    whole, _, frac = ("%g" % ep).partition(".")
+    return f"{int(whole):02d}.{frac}" if frac else f"{int(whole):02d}"
+
+
 def _default_filename(episode: float, resolution: int) -> str:
-    return sanitize_filename(f"EP{int(episode):02d}_{_resolution_label(resolution)}.mp4")
+    return sanitize_filename(
+        f"EP{_episode_token(episode)}_{_resolution_label(resolution)}.mp4"
+    )
 
 
-def _normalize_download_options(options: Optional[list[Any]]) -> Optional[list[dict[str, Any]]]:
+def _normalize_download_options(
+    options: Optional[list[Any]],
+) -> Optional[list[dict[str, Any]]]:
     if not options:
         return None
 
@@ -129,13 +144,39 @@ def _failure_from_message(message: str) -> tuple[str, str]:
 
     if "no space left on device" in lowered or "insufficient disk space" in lowered:
         return "disk_full", msg
-    if any(token in lowered for token in ("range not satisfiable", "size mismatch", "mp4 failed", "content-range", "content-length mismatch", "integrity")):
+    if any(
+        token in lowered
+        for token in (
+            "range not satisfiable",
+            "size mismatch",
+            "mp4 failed",
+            "content-range",
+            "content-length mismatch",
+            "integrity",
+        )
+    ):
         return "integrity_failed", msg
-    if any(token in lowered for token in ("http 429", "too many requests", "rate limit", "rate-limit")):
+    if any(
+        token in lowered
+        for token in ("http 429", "too many requests", "rate limit", "rate-limit")
+    ):
         return "network", msg
-    if any(token in lowered for token in ("link expired", "token", "redirect", "kwik", "forbidden", "gone")):
+    if any(
+        token in lowered
+        for token in ("link expired", "token", "redirect", "kwik", "forbidden", "gone")
+    ):
         return "link_expired", msg
-    if any(token in lowered for token in ("timeout", "timed out", "connection", "transport", "network", "stall")):
+    if any(
+        token in lowered
+        for token in (
+            "timeout",
+            "timed out",
+            "connection",
+            "transport",
+            "network",
+            "stall",
+        )
+    ):
         return "network", msg
     return "unknown", msg
 
@@ -162,7 +203,7 @@ def classify_failure(error: Exception | str) -> tuple[str, str]:
             return "link_expired", f"HTTP {status_code}: {error}"
         if status_code == 507:
             return "disk_full", f"HTTP {status_code}: {error}"
-        if status_code >= 500:
+        if status_code == 429 or status_code >= 500:
             return "network", f"HTTP {status_code}: {error}"
         return "unknown", f"HTTP {status_code}: {error}"
     if isinstance(error, NETWORK_EXCEPTIONS):
@@ -178,9 +219,12 @@ def _safe_int(value: Optional[str], default: int = 0) -> int:
         return default
 
 
-def _parse_content_range(content_range: str) -> Optional[tuple[int, int, Optional[int]]]:
+def _parse_content_range(
+    content_range: str,
+) -> Optional[tuple[int, int, Optional[int]]]:
     """
     Parse Content-Range header.
+
 
     Returns (start, end, total_or_none) for valid values like:
       bytes 100-199/1000
@@ -203,6 +247,7 @@ def _parse_content_range(content_range: str) -> Optional[tuple[int, int, Optiona
 def _looks_like_valid_mp4(path: str) -> bool:
     """
     Perform a lightweight MP4 box-level sanity check.
+
 
     This catches common truncation/corruption cases where container boxes are
     incomplete or missing critical atoms.
@@ -276,7 +321,7 @@ def _is_retryable(error: Exception) -> bool:
     ):
         return True
     if isinstance(error, DownloadHTTPError):
-        return error.status_code >= 500
+        return error.status_code == 429 or error.status_code >= 500
     return False
 
 
@@ -300,7 +345,9 @@ class DownloadTask:
     anime_session: Optional[str] = None
     episode_session: Optional[str] = None
     download_options: Optional[list[dict[str, Any]]] = None
-    status: str = "pending"  # pending, downloading, completed, failed, stopped, stopping, pausing
+    status: str = (
+        "pending"  # pending, downloading, completed, failed, stopped, stopping, pausing
+    )
     progress: float = 0.0
     downloaded_bytes: int = 0
     total_bytes: int = 0
@@ -334,13 +381,19 @@ class DownloadManager:
         self.completed_tasks: list[DownloadTask] = []
         self.failed_tasks: list[DownloadTask] = []
 
-        self._workers: list[asyncio.Task] = []
+        self._workers: dict[int, asyncio.Task] = {}
         self._running = False
         self._restored = False
         self._shutdown_requested = False
         self._progress_callbacks: list[Callable[[DownloadTask], Any]] = []
         self._link_resolver: Optional[Callable[[DownloadTask], Any]] = None
         self._scaling_lock = asyncio.Lock()
+        # Tasks currently in retry backoff (waiting to be re-enqueued). Kept
+        # visible/cancellable during the wait: task_id -> DownloadTask holds the
+        # task for status/cancel, task_id -> asyncio.Task holds the timer so it
+        # can be cancelled (Stop / Stop All / shutdown / maintenance).
+        self._retrying_tasks: dict[str, DownloadTask] = {}
+        self._retry_handles: dict[str, asyncio.Task] = {}
 
         # Duplicate prevention: (anime_title, episode, resolution) -> True
         self._known_episodes: set[tuple[str, float, int]] = set()
@@ -383,7 +436,9 @@ class DownloadManager:
     def add_progress_callback(self, callback: Callable[[DownloadTask], Any]) -> None:
         self._progress_callbacks.append(callback)
 
-    def set_link_resolver(self, resolver: Optional[Callable[[DownloadTask], Any]]) -> None:
+    def set_link_resolver(
+        self, resolver: Optional[Callable[[DownloadTask], Any]]
+    ) -> None:
         self._link_resolver = resolver
 
     def remove_progress_callback(self, callback: Callable[[DownloadTask], Any]) -> None:
@@ -440,7 +495,9 @@ class DownloadManager:
             "anime_title": task.anime_title,
             "anime_session": task.anime_session,
             "episode_session": task.episode_session,
-            "download_options": json.dumps(task.download_options) if task.download_options else None,
+            "download_options": (
+                json.dumps(task.download_options) if task.download_options else None
+            ),
             "episode": task.episode,
             "resolution": task.resolution,
             "status": task.status,
@@ -456,7 +513,9 @@ class DownloadManager:
             "terminal": 1 if task.terminal else 0,
             "created_at": task.created_at.isoformat(),
             "started_at": task.started_at.isoformat() if task.started_at else None,
-            "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            "completed_at": (
+                task.completed_at.isoformat() if task.completed_at else None
+            ),
             "updated_at": now,
         }
 
@@ -565,50 +624,6 @@ class DownloadManager:
         except OSError:
             logger.warning("Failed to remove lock file: %s", target)
 
-    def has_existing_task_or_file(
-        self,
-        anime_title: str,
-        episode: float,
-        resolution: int,
-        filename: Optional[str] = None,
-    ) -> bool:
-        key = (anime_title, episode, resolution)
-        if key in self._known_episodes:
-            return True
-        candidate_name = sanitize_filename(filename) if filename else _default_filename(episode, resolution)
-        task = DownloadTask(
-            id="preview",
-            url="",
-            filename=candidate_name,
-            anime_title=anime_title,
-            episode=episode,
-            resolution=resolution,
-        )
-        filepath, _partial, lock_path = self._build_file_paths(task)
-        return os.path.exists(filepath) or os.path.exists(lock_path)
-
-    def estimate_required_bytes(self, size_bytes: list[Optional[int]]) -> int:
-        known = 0
-        unknown_count = 0
-        for size in size_bytes:
-            if size and size > 0:
-                known += int(size)
-            else:
-                unknown_count += 1
-        return known + (unknown_count * UNKNOWN_EPISODE_SIZE_BYTES)
-
-    def disk_space_preflight(self, size_bytes: list[Optional[int]]) -> dict[str, int | bool]:
-        required_bytes = self.estimate_required_bytes(size_bytes)
-        usage = shutil.disk_usage(self.download_path)
-        required_with_margin = required_bytes + DISK_SPACE_SAFETY_MARGIN_BYTES
-        ok = usage.free >= required_with_margin
-        return {
-            "ok": ok,
-            "required_bytes": required_bytes,
-            "required_with_margin_bytes": required_with_margin,
-            "free_bytes": usage.free,
-        }
-
     async def restore_state(self) -> None:
         """Restore queue/history from SQLite and resume pending/in-progress items."""
         recovered = state_store.mark_recoverable_tasks_pending()
@@ -661,7 +676,9 @@ class DownloadManager:
                 continue
 
             if os.path.exists(filepath):
-                if not filepath.lower().endswith(".mp4") or _looks_like_valid_mp4(filepath):
+                if not filepath.lower().endswith(".mp4") or _looks_like_valid_mp4(
+                    filepath
+                ):
                     task.status = "completed"
                     task.progress = 100.0
                     task.error = None
@@ -738,7 +755,12 @@ class DownloadManager:
         for row in state_store.load_download_tasks():
             status = row.get("status")
             task_id = row.get("id")
-            if not task_id or status not in {"pending", "downloading", "stopping", "pausing"}:
+            if not task_id or status not in {
+                "pending",
+                "downloading",
+                "stopping",
+                "pausing",
+            }:
                 continue
             if task_id not in runtime_ids:
                 orphan_ids.append(task_id)
@@ -772,7 +794,11 @@ class DownloadManager:
         episode_session: Optional[str] = None,
         download_options: Optional[list[Any]] = None,
     ) -> Optional[DownloadTask]:
-        candidate_name = sanitize_filename(filename) if filename else _default_filename(episode, resolution)
+        candidate_name = (
+            sanitize_filename(filename)
+            if filename
+            else _default_filename(episode, resolution)
+        )
         normalized_options = _normalize_download_options(download_options)
 
         key = (anime_title, episode, resolution)
@@ -793,7 +819,9 @@ class DownloadManager:
         )
         _filepath, _partial_path, lock_path = self._build_file_paths(preview)
         if os.path.exists(lock_path):
-            logger.debug("File lock already exists, skipping conflicting write: %s", lock_path)
+            logger.debug(
+                "File lock already exists, skipping conflicting write: %s", lock_path
+            )
             return None
 
         self._known_episodes.add(key)
@@ -821,9 +849,13 @@ class DownloadManager:
         if task.url:
             return
         if not self._link_resolver:
-            raise RuntimeError("Download task is missing a direct URL and no link resolver is configured")
+            raise RuntimeError(
+                "Download task is missing a direct URL and no link resolver is configured"
+            )
         if not task.anime_session or not task.episode_session:
-            raise RuntimeError("Download task is missing AnimePahe metadata required to resolve a link")
+            raise RuntimeError(
+                "Download task is missing AnimePahe metadata required to resolve a link"
+            )
 
         old_key = self._episode_key(task)
         old_resolution = task.resolution
@@ -844,7 +876,9 @@ class DownloadManager:
             resolved_resolution = None
             resolved_filename = None
         elif isinstance(result, dict):
-            direct_url = str(result.get("url") or result.get("direct_link") or "").strip()
+            direct_url = str(
+                result.get("url") or result.get("direct_link") or ""
+            ).strip()
             resolved_resolution = result.get("resolution")
             resolved_filename = result.get("filename")
         else:
@@ -872,13 +906,18 @@ class DownloadManager:
         self._persist_task(task)
         await self._notify_progress(task)
 
-    def _should_retry_with_fresh_link(self, task: DownloadTask, error: Exception) -> bool:
+    def _should_retry_with_fresh_link(
+        self, task: DownloadTask, error: Exception
+    ) -> bool:
         if not self._has_link_resolver_metadata(task):
             return False
         if _is_kwik_session_rejected_message(str(error)):
             return False
         reason, _detail = classify_failure(error)
-        return reason in {"link_expired", "network"} and task.retry_count < task.max_retries
+        return (
+            reason in {"link_expired", "network"}
+            and task.retry_count < task.max_retries
+        )
 
     async def _queue_retry(
         self,
@@ -893,7 +932,9 @@ class DownloadManager:
         self._metrics["downloads_retried"] += 1
         failure_reason, failure_detail = classify_failure(error)
         task.status = "pending"
-        task.error = f"Retry {task.retry_count}/{task.max_retries} in {backoff}s: {error}"
+        task.error = (
+            f"Retry {task.retry_count}/{task.max_retries} in {backoff}s: {error}"
+        )
         task.failure_reason = failure_reason
         task.failure_detail = failure_detail
         task.speed = 0.0
@@ -910,13 +951,54 @@ class DownloadManager:
                     pass
         logger.info(
             "Retrying %s (attempt %d/%d in %ss): %s",
-            task.filename, task.retry_count, task.max_retries, backoff, error,
+            task.filename,
+            task.retry_count,
+            task.max_retries,
+            backoff,
+            error,
         )
         self._persist_task(task)
         await self._notify_progress(task)
-        await asyncio.sleep(backoff)
-        if self._running and not self._shutdown_requested:
-            await self.queue.put(task)
+        # Re-enqueue after the backoff WITHOUT blocking this worker slot. The
+        # worker's finally block releases the lock and frees the slot as soon as
+        # this returns; a tracked background task performs the delayed re-queue
+        # so other queued downloads keep progressing during the backoff.
+        self._schedule_retry(task, backoff)
+
+    def _schedule_retry(self, task: DownloadTask, backoff: int) -> None:
+        async def _delayed_requeue() -> None:
+            try:
+                await asyncio.sleep(backoff)
+                # Only re-enqueue if still running and this task wasn't cancelled
+                # (removed from _retrying_tasks) during the backoff.
+                if (
+                    self._running
+                    and not self._shutdown_requested
+                    and task.id in self._retrying_tasks
+                ):
+                    await self.queue.put(task)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._retrying_tasks.pop(task.id, None)
+                self._retry_handles.pop(task.id, None)
+
+        self._retrying_tasks[task.id] = task
+        self._retry_handles[task.id] = asyncio.create_task(_delayed_requeue())
+
+    async def _cancel_retry_tasks(self) -> None:
+        """Cancel all pending retry backoffs and wait for them to unwind.
+
+
+        The tasks remain persisted as 'pending' in the store, so they are not
+        lost (restore_state / reload_state_from_store will re-enqueue them)."""
+        handles = list(self._retry_handles.values())
+        for handle in handles:
+            handle.cancel()
+        if handles:
+            await asyncio.gather(*handles, return_exceptions=True)
+        self._retry_handles.clear()
+        self._retrying_tasks.clear()
 
     async def _download_file(self, task: DownloadTask) -> None:
         """Download a single file with progress tracking, resume, and integrity checks."""
@@ -940,6 +1022,32 @@ class DownloadManager:
         try:
             await self._resolve_task_link(task)
             filepath, partial_path, lock_path = self._build_file_paths(task)
+
+            # Post-resolve completion guard: for the default "best"/"lowest"
+            # resolution, the concrete target (e.g. EP01_1080p.mp4) is only known
+            # after resolving. If that file already exists and is valid, mark the
+            # task complete instead of re-downloading and overwriting it. This is
+            # a post-resolve check (not pre-queue suppression), so it does not
+            # reintroduce the historical "resolves but nothing enqueues" drop.
+            if os.path.exists(filepath):
+                already_valid = not filepath.lower().endswith(
+                    ".mp4"
+                ) or await asyncio.to_thread(_looks_like_valid_mp4, filepath)
+                if already_valid:
+                    task.status = "completed"
+                    task.progress = 100.0
+                    task.speed = 0.0
+                    task.error = None
+                    task.failure_reason = None
+                    task.failure_detail = None
+                    task.terminal = False
+                    task.completed_at = task.completed_at or datetime.now()
+                    self._known_episodes.add(self._episode_key(task))
+                    self._append_completed(task)
+                    self._persist_task(task)
+                    self._prune_history()
+                    return
+
             self._acquire_lock(task, lock_path)
 
             headers = {
@@ -955,9 +1063,13 @@ class DownloadManager:
                     task.downloaded_bytes = existing_bytes
 
             async with make_async_session(timeout=self.timeout) as session:
-                async with session.stream("GET", task.url, headers=headers, allow_redirects=True) as response:
+                async with session.stream(
+                    "GET", task.url, headers=headers, allow_redirects=True
+                ) as response:
                     status = response.status_code
-                    response_content_length = _safe_int(response.headers.get("content-length"), 0)
+                    response_content_length = _safe_int(
+                        response.headers.get("content-length"), 0
+                    )
                     bytes_received_this_response = 0
                     expected_total_size = 0
 
@@ -966,15 +1078,21 @@ class DownloadManager:
                             os.remove(partial_path)
                         existing_bytes = 0
                         task.downloaded_bytes = 0
-                        raise DownloadIntegrityError("Range not satisfiable, restarting from zero")
+                        raise DownloadIntegrityError(
+                            "Range not satisfiable, restarting from zero"
+                        )
 
                     if status >= 400:
                         raise DownloadHTTPError(status)
 
                     if status == 206 and existing_bytes > 0:
-                        parsed_range = _parse_content_range(response.headers.get("content-range", ""))
+                        parsed_range = _parse_content_range(
+                            response.headers.get("content-range", "")
+                        )
                         if not parsed_range:
-                            raise DownloadIntegrityError("Missing/invalid Content-Range for resumed download")
+                            raise DownloadIntegrityError(
+                                "Missing/invalid Content-Range for resumed download"
+                            )
 
                         range_start, range_end, range_total = parsed_range
                         if range_start != existing_bytes:
@@ -983,8 +1101,13 @@ class DownloadManager:
                             )
 
                         range_length = (range_end - range_start) + 1
-                        if response_content_length > 0 and response_content_length != range_length:
-                            raise DownloadIntegrityError("Content-Length mismatch with Content-Range span")
+                        if (
+                            response_content_length > 0
+                            and response_content_length != range_length
+                        ):
+                            raise DownloadIntegrityError(
+                                "Content-Length mismatch with Content-Range span"
+                            )
 
                         file_mode = "ab"
                         if range_total is not None:
@@ -998,7 +1121,9 @@ class DownloadManager:
                             expected_total_size = 0
                     else:
                         if status == 206 and existing_bytes == 0:
-                            raise DownloadIntegrityError("Received partial response for fresh download")
+                            raise DownloadIntegrityError(
+                                "Received partial response for fresh download"
+                            )
 
                         file_mode = "wb"
                         task.downloaded_bytes = 0
@@ -1020,10 +1145,14 @@ class DownloadManager:
                             except StopAsyncIteration:
                                 break
                             except asyncio.TimeoutError:
-                                raise DownloadStallError(f"No data for {STALL_TIMEOUT}s")
+                                raise DownloadStallError(
+                                    f"No data for {STALL_TIMEOUT}s"
+                                )
 
                             if self._shutdown_requested:
-                                raise DownloadPausedError("Paused for graceful shutdown")
+                                raise DownloadPausedError(
+                                    "Paused for graceful shutdown"
+                                )
                             if task.status == "stopping":
                                 raise DownloadStoppedError("Download stopped by user")
                             if not chunk:
@@ -1033,7 +1162,9 @@ class DownloadManager:
                             task.downloaded_bytes += len(chunk)
 
                             if task.total_bytes > 0:
-                                task.progress = (task.downloaded_bytes / task.total_bytes) * 100
+                                task.progress = (
+                                    task.downloaded_bytes / task.total_bytes
+                                ) * 100
 
                             now = datetime.now()
                             elapsed = (now - last_update).total_seconds()
@@ -1045,8 +1176,13 @@ class DownloadManager:
                                 self._persist_task(task)
                                 await self._notify_progress(task)
 
-                    if response_content_length > 0 and bytes_received_this_response != response_content_length:
-                        raise DownloadIntegrityError("Response body ended before expected Content-Length")
+                    if (
+                        response_content_length > 0
+                        and bytes_received_this_response != response_content_length
+                    ):
+                        raise DownloadIntegrityError(
+                            "Response body ended before expected Content-Length"
+                        )
 
             final_size = os.path.getsize(partial_path)
             if expected_total_size > 0 and final_size != expected_total_size:
@@ -1054,8 +1190,12 @@ class DownloadManager:
                     f"Downloaded file size mismatch (expected {expected_total_size}, got {final_size})"
                 )
 
-            if filepath.lower().endswith(".mp4") and not _looks_like_valid_mp4(partial_path):
-                raise DownloadIntegrityError("Downloaded MP4 failed container validation")
+            if filepath.lower().endswith(".mp4") and not await asyncio.to_thread(
+                _looks_like_valid_mp4, partial_path
+            ):
+                raise DownloadIntegrityError(
+                    "Downloaded MP4 failed container validation"
+                )
 
             os.replace(partial_path, filepath)
 
@@ -1115,7 +1255,7 @@ class DownloadManager:
             if self._should_retry_with_fresh_link(task, e):
                 backoff = min(
                     MAX_RETRY_BACKOFF_SECONDS,
-                    BASE_RETRY_BACKOFF_SECONDS * (2 ** task.retry_count),
+                    BASE_RETRY_BACKOFF_SECONDS * (2**task.retry_count),
                 )
                 await self._queue_retry(
                     task,
@@ -1129,7 +1269,7 @@ class DownloadManager:
             if _is_retryable(e) and task.retry_count < task.max_retries:
                 backoff = min(
                     MAX_RETRY_BACKOFF_SECONDS,
-                    BASE_RETRY_BACKOFF_SECONDS * (2 ** task.retry_count),
+                    BASE_RETRY_BACKOFF_SECONDS * (2**task.retry_count),
                 )
                 await self._queue_retry(task, e, backoff=backoff, fresh_link=False)
                 return
@@ -1146,7 +1286,11 @@ class DownloadManager:
             self._persist_task(task)
             self._prune_history()
 
-            if partial_path and isinstance(e, DownloadIntegrityError) and os.path.exists(partial_path):
+            if (
+                partial_path
+                and isinstance(e, DownloadIntegrityError)
+                and os.path.exists(partial_path)
+            ):
                 try:
                     os.remove(partial_path)
                 except OSError:
@@ -1184,14 +1328,42 @@ class DownloadManager:
     async def adjust_workers(self, new_count: int) -> None:
         async with self._scaling_lock:
             new_count = max(1, min(8, new_count))
-            old_count = len(self._workers)
             self.max_workers = new_count
             if not self._running:
                 return
-            if new_count > old_count:
-                for i in range(old_count, new_count):
-                    self._workers.append(asyncio.create_task(self._worker(i)))
-            self._workers = [w for w in self._workers if not w.done()]
+            # Drop finished workers, then ensure a live worker exists for every
+            # id in [0, max_workers). Workers whose id >= max_workers self-exit
+            # via their loop check. Keying workers by id (rather than counting a
+            # list that may contain soon-to-exit workers) makes scale down->up
+            # reconcile to exactly max_workers live workers.
+            for worker_id in [
+                wid for wid, task in self._workers.items() if task.done()
+            ]:
+                self._workers.pop(worker_id, None)
+            for worker_id in range(new_count):
+                existing = self._workers.get(worker_id)
+                if existing is None or existing.done():
+                    self._workers[worker_id] = asyncio.create_task(
+                        self._worker(worker_id)
+                    )
+
+    async def pause_and_drain(self, timeout: float = 10.0) -> bool:
+        """Pause the queue and wait for in-flight downloads to finish.
+
+
+        Used before destructive maintenance/import so a worker cannot start a new
+        download (or keep writing a .partial/.lock) while files/state are being
+        rewritten. Returns True if the queue reached an idle state in time.
+        """
+        self.pause()
+        # Cancel pending retry backoffs so a late re-enqueue cannot race the
+        # reload that follows maintenance/import. They stay persisted as
+        # 'pending' and are restored by reload_state_from_store.
+        await self._cancel_retry_tasks()
+        deadline = time.monotonic() + timeout
+        while self.active_tasks and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return not self.active_tasks
 
     async def start(self) -> None:
         if self._running:
@@ -1201,24 +1373,33 @@ class DownloadManager:
             self._restored = True
         self._shutdown_requested = False
         self._running = True
-        self._workers = [asyncio.create_task(self._worker(i)) for i in range(self.max_workers)]
+        self._workers = {
+            i: asyncio.create_task(self._worker(i)) for i in range(self.max_workers)
+        }
 
     async def stop(self) -> None:
         self._shutdown_requested = True
         self._running = False
         self._pause_event.set()
 
-        for worker in self._workers:
+        workers = list(self._workers.values())
+        for worker in workers:
             worker.cancel()
-        if self._workers:
-            await asyncio.gather(*self._workers, return_exceptions=True)
-        self._workers = []
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        self._workers = {}
+
+        # Cancel any pending retry backoffs; those tasks are already persisted as
+        # "pending" and will be recovered on the next start().
+        await self._cancel_retry_tasks()
 
         self._persist_runtime_state()
         self._shutdown_requested = False
 
     def get_status(self) -> dict:
-        pending = self._pending_tasks_snapshot()
+        # Tasks waiting out a retry backoff are shown as pending so they stay
+        # visible in the UI (and are not silently missing during the wait).
+        pending = self._pending_tasks_snapshot() + list(self._retrying_tasks.values())
         return {
             "running": self._running,
             "max_workers": self.max_workers,
@@ -1259,6 +1440,9 @@ class DownloadManager:
     def find_task(self, task_id: str) -> Optional[DownloadTask]:
         if task_id in self.active_tasks:
             return self.active_tasks[task_id]
+
+        if task_id in self._retrying_tasks:
+            return self._retrying_tasks[task_id]
 
         for task in self._pending_tasks_snapshot():
             if task.id == task_id:
@@ -1312,8 +1496,12 @@ class DownloadManager:
             task.failure_reason = "path_error"
             task.failure_detail = str(e)
             task.terminal = True
-            self.completed_tasks = [item for item in self.completed_tasks if item.id != task.id]
-            self.failed_tasks = [item for item in self.failed_tasks if item.id != task.id]
+            self.completed_tasks = [
+                item for item in self.completed_tasks if item.id != task.id
+            ]
+            self.failed_tasks = [
+                item for item in self.failed_tasks if item.id != task.id
+            ]
             self._append_failed(task)
             self._known_episodes.discard(self._episode_key(task))
             self._persist_task(task)
@@ -1327,8 +1515,12 @@ class DownloadManager:
             task.failure_reason = "integrity_failed"
             task.failure_detail = detail
             task.terminal = True
-            self.completed_tasks = [item for item in self.completed_tasks if item.id != task.id]
-            self.failed_tasks = [item for item in self.failed_tasks if item.id != task.id]
+            self.completed_tasks = [
+                item for item in self.completed_tasks if item.id != task.id
+            ]
+            self.failed_tasks = [
+                item for item in self.failed_tasks if item.id != task.id
+            ]
             self._append_failed(task)
             self._known_episodes.discard(self._episode_key(task))
             self._persist_task(task)
@@ -1342,8 +1534,12 @@ class DownloadManager:
             task.failure_reason = "integrity_failed"
             task.failure_detail = detail
             task.terminal = True
-            self.completed_tasks = [item for item in self.completed_tasks if item.id != task.id]
-            self.failed_tasks = [item for item in self.failed_tasks if item.id != task.id]
+            self.completed_tasks = [
+                item for item in self.completed_tasks if item.id != task.id
+            ]
+            self.failed_tasks = [
+                item for item in self.failed_tasks if item.id != task.id
+            ]
             self._append_failed(task)
             self._known_episodes.discard(self._episode_key(task))
             self._persist_task(task)
@@ -1358,13 +1554,19 @@ class DownloadManager:
             task.error = None
             task.terminal = False
             task.completed_at = datetime.now()
-            self.failed_tasks = [item for item in self.failed_tasks if item.id != task.id]
+            self.failed_tasks = [
+                item for item in self.failed_tasks if item.id != task.id
+            ]
             if not any(item.id == task.id for item in self.completed_tasks):
                 self._append_completed(task)
             self._persist_task(task)
             self._prune_history()
 
-        return {"found": True, "valid": True, "message": "File integrity validation passed"}
+        return {
+            "found": True,
+            "valid": True,
+            "message": "File integrity validation passed",
+        }
 
     async def cancel_task(self, task_id: str) -> bool:
         if task_id in self.active_tasks:
@@ -1374,6 +1576,25 @@ class DownloadManager:
             task.failure_reason = "cancelled"
             task.failure_detail = task.error
             self._persist_task(task)
+            return True
+
+        # A task waiting out a retry backoff: cancel its timer so it is not
+        # re-enqueued, and record it as stopped.
+        if task_id in self._retrying_tasks:
+            task = self._retrying_tasks.pop(task_id)
+            handle = self._retry_handles.pop(task_id, None)
+            if handle:
+                handle.cancel()
+            task.status = "stopped"
+            task.error = "Cancelled during retry backoff"
+            task.failure_reason = "cancelled"
+            task.failure_detail = task.error
+            task.speed = 0.0
+            task.terminal = True
+            self._append_failed(task)
+            self._known_episodes.discard(self._episode_key(task))
+            self._persist_task(task)
+            self._prune_history()
             return True
 
         queue_items = getattr(self.queue, "_queue", None)
@@ -1409,6 +1630,12 @@ class DownloadManager:
     async def cancel_all_tasks(self) -> int:
         count = 0
         for task_id in list(self.active_tasks.keys()):
+            if await self.cancel_task(task_id):
+                count += 1
+
+        # Stop tasks waiting out a retry backoff too, so "Stop All" truly stops
+        # everything (otherwise they would re-enqueue and download after backoff).
+        for task_id in list(self._retrying_tasks.keys()):
             if await self.cancel_task(task_id):
                 count += 1
 

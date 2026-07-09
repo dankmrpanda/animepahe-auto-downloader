@@ -4,6 +4,7 @@ Logging configuration for AnimePahe Web Downloader.
 
 from __future__ import annotations
 
+
 import json
 import logging
 import os
@@ -41,12 +42,21 @@ def setup_logging() -> None:
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
-    log_dir = Path(os.environ.get("LOG_DIR", str(Path(__file__).resolve().parents[2] / "logs")))
+    log_dir = Path(
+        os.environ.get("LOG_DIR", str(Path(__file__).resolve().parents[2] / "logs"))
+    )
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "app.log"
 
-    max_bytes = int(os.environ.get("LOG_MAX_BYTES", str(5 * 1024 * 1024)))
-    backup_count = int(os.environ.get("LOG_BACKUP_COUNT", "5"))
+    def _env_int(name: str, default: int) -> int:
+        try:
+            value = os.environ.get(name)
+            return int(value) if value not in (None, "") else default
+        except (TypeError, ValueError):
+            return default
+
+    max_bytes = _env_int("LOG_MAX_BYTES", 5 * 1024 * 1024)
+    backup_count = _env_int("LOG_BACKUP_COUNT", 5)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
@@ -72,4 +82,3 @@ def setup_logging() -> None:
 
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
-

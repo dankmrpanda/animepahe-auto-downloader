@@ -14,12 +14,20 @@ from http.cookiejar import LoadError, MozillaCookieJar
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
+
 from curl_cffi.requests import AsyncSession
 
-from core.clearance import ClearanceError, ClearanceProvider, host_from_url, looks_like_cf_challenge, normalize_host
 
+from core.clearance import (
+    ClearanceError,
+    ClearanceProvider,
+    host_from_url,
+    looks_like_cf_challenge,
+    normalize_host,
+)
 
 logger = logging.getLogger(__name__)
+
 
 DEFAULT_BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -30,25 +38,31 @@ DEFAULT_BROWSER_USER_AGENT = (
 
 class KwikDecodeError(Exception):
     """Raised when Kwik link decoding fails"""
+
     pass
 
 
 class KwikPahe:
     """Handles extraction and decoding of Kwik video player links"""
-    
+
     def __init__(self, clearance_provider: ClearanceProvider | None = None):
-        self.base_alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+        self.base_alphabet = (
+            "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+        )
         self.timeout = 30.0
-        self.user_agent = (
-            os.environ.get("KWIK_USER_AGENT")
-            or os.environ.get("ANIMEPAHE_USER_AGENT")
+        self.user_agent = os.environ.get("KWIK_USER_AGENT") or os.environ.get(
+            "ANIMEPAHE_USER_AGENT"
         )
         self.cookie_file = os.environ.get("KWIK_COOKIE_FILE")
         self.clearance_provider = clearance_provider
         self._cookie_clients_loaded: set[int] = set()
         self._cookie_load_summaries: dict[int, dict[str, object]] = {}
-        self._resolve_semaphore = asyncio.Semaphore(self._env_int("ANIMEPAHE_RESOLVE_CONCURRENCY", 1, 1, 4))
-        self._resolve_delay_seconds = self._env_int("ANIMEPAHE_RESOLVE_DELAY_MS", 750, 0, 10000) / 1000
+        self._resolve_semaphore = asyncio.Semaphore(
+            self._env_int("ANIMEPAHE_RESOLVE_CONCURRENCY", 1, 1, 4)
+        )
+        self._resolve_delay_seconds = (
+            self._env_int("ANIMEPAHE_RESOLVE_DELAY_MS", 750, 0, 10000) / 1000
+        )
         self._resolve_pace_lock = asyncio.Lock()
         self._last_resolve_hit = 0.0
 
@@ -83,7 +97,7 @@ class KwikPahe:
             return max(0.0, min(120.0, float(value)))
         except ValueError:
             return None
-    
+
     def _base_convert(self, input_str: str, from_base: int, to_base: int) -> int:
         """
         Convert a number from one base to another.
@@ -91,57 +105,59 @@ class KwikPahe:
         """
         from_alphabet = self.base_alphabet[:from_base]
         to_alphabet = self.base_alphabet[:to_base]
-        
+
         # Convert from source base to decimal
         decimal_value = 0
         for idx, char in enumerate(reversed(input_str)):
             pos = from_alphabet.find(char)
             if pos != -1:
-                decimal_value += pos * (from_base ** idx)
-        
+                decimal_value += pos * (from_base**idx)
+
         if decimal_value == 0:
             return 0
-        
+
         # Convert from decimal to target base
         result = ""
         while decimal_value > 0:
             result = to_alphabet[decimal_value % to_base] + result
             decimal_value //= to_base
-        
+
         return int(result) if result else 0
-    
-    def decode_obfuscated_js(self, encoded: str, key: str, offset: int, base: int) -> str:
+
+    def decode_obfuscated_js(
+        self, encoded: str, key: str, offset: int, base: int
+    ) -> str:
         """
         Decode the obfuscated JavaScript string from Kwik pages.
-        
+
         Args:
             encoded: The encoded string
             key: The alphabet key used for encoding
             offset: Character offset value
             base: The base for conversion
-            
+
         Returns:
             Decoded string containing the video URL
         """
         decoded = ""
         i = 0
-        
+
         while i < len(encoded):
             segment = ""
             # Collect characters until we hit the delimiter (key[base])
             while i < len(encoded) and encoded[i] != key[base]:
                 segment += encoded[i]
                 i += 1
-            
+
             # Replace key characters with their index values
             for j in range(len(key)):
                 segment = segment.replace(key[j], str(j))
-            
+
             # Convert and apply offset to get ASCII character
             char_code = self._base_convert(segment, base, 10) - offset
             decoded += chr(char_code)
             i += 1
-        
+
         return decoded
 
     def _absolute_https_url(self, url: str, base_url: str = "") -> str:
@@ -210,6 +226,7 @@ class KwikPahe:
     def _load_cookie_file(self, client: AsyncSession) -> None:
         """
         Load user-provided Netscape cookies for Kwik.
+
 
         This intentionally reads only an explicit cookie export path from
         KWIK_COOKIE_FILE; it does not inspect browser profile databases.
@@ -301,15 +318,15 @@ class KwikPahe:
         headers = kwargs.get("headers")
         if isinstance(headers, dict) and self.user_agent:
             headers["user-agent"] = self.user_agent
-    
+
     async def _fetch_with_retry(
-        self, 
+        self,
         client: AsyncSession,
-        url: str, 
+        url: str,
         method: str = "GET",
         retries: int = 3,
         _clearance_refreshed: bool = False,
-        **kwargs
+        **kwargs,
     ):
         """Fetch URL with exponential backoff retry"""
         self._inject_cached_clearance(client, url)
@@ -318,7 +335,7 @@ class KwikPahe:
         last_status: int | None = None
         last_response = None
         non_retryable_statuses = {401, 404, 410}
-        
+
         for attempt in range(retries):
             sleep_seconds: float | None = None
             try:
@@ -327,7 +344,7 @@ class KwikPahe:
                     response = await client.get(url, **kwargs)
                 else:
                     response = await client.post(url, **kwargs)
-                
+
                 if 200 <= response.status_code < 400:
                     return response
 
@@ -339,11 +356,17 @@ class KwikPahe:
                     and self.clearance_provider
                     and not _clearance_refreshed
                 ):
-                    host = host_from_url(str(response.url) if getattr(response, "url", None) else url)
+                    host = host_from_url(
+                        str(response.url) if getattr(response, "url", None) else url
+                    )
                     challenged_at = time.time()
                     try:
                         pair = await self.clearance_provider.mint(
-                            str(response.url) if getattr(response, "url", None) else url,
+                            (
+                                str(response.url)
+                                if getattr(response, "url", None)
+                                else url
+                            ),
                             host,
                             force=True,
                             stale_before=challenged_at,
@@ -367,7 +390,11 @@ class KwikPahe:
                     )
                 if response.status_code in {403, 429}:
                     retry_after = self._retry_after_seconds(response.headers)
-                    sleep_seconds = retry_after if retry_after is not None else min(30.0, 2.0 ** attempt)
+                    sleep_seconds = (
+                        retry_after
+                        if retry_after is not None
+                        else min(30.0, 2.0**attempt)
+                    )
                     logger.warning(
                         "Kwik/pahe fetch returned HTTP %s for %s; backing off %.1fs before retry",
                         response.status_code,
@@ -380,11 +407,13 @@ class KwikPahe:
                 raise
             except Exception as e:
                 last_error = str(e)
-            
+
             # Exponential backoff
             if attempt < retries - 1:
-                await asyncio.sleep(sleep_seconds if sleep_seconds is not None else 2 ** attempt)
-        
+                await asyncio.sleep(
+                    sleep_seconds if sleep_seconds is not None else 2**attempt
+                )
+
         if last_response is not None and self._looks_like_cf_challenge(last_response):
             raise KwikDecodeError(
                 "Kwik returned a Cloudflare challenge. Refresh cookies.txt/user-agent.txt "
@@ -392,7 +421,7 @@ class KwikPahe:
                 "for automated clearance refresh."
             )
 
-        if last_status == 403 and urlparse(url).netloc.endswith("kwik.cx"):
+        if last_status == 403 and normalize_host(url).startswith("kwik."):
             if self.cookie_file:
                 summary = self._cookie_load_summaries.get(id(client), {})
                 loaded_count = int(summary.get("count") or 0)
@@ -422,31 +451,40 @@ class KwikPahe:
                 "restart the app."
             )
 
-        raise KwikDecodeError(f"Failed to fetch {url} after {retries} attempts: {last_error}")
-    
+        raise KwikDecodeError(
+            f"Failed to fetch {url} after {retries} attempts: {last_error}"
+        )
+
     async def fetch_direct_link(
-        self, 
+        self,
         client: AsyncSession,
         form_action_url: str,
-        token: str, 
+        token: str,
         session_cookie: str,
         page_url: str,
     ) -> str:
         """
         Submit the token to get the redirect to the direct download link.
-        
+
         Args:
             client: HTTP client
             form_action_url: The form action URL from the Kwik page
             token: The extracted token
             session_cookie: The kwik_session cookie value
             page_url: The Kwik page URL used as the form referer
-            
+
         Returns:
             Direct download URL
         """
         if session_cookie:
-            client.cookies.set("kwik_session", session_cookie, domain="kwik.cx", path="/")
+            # Scope the session cookie to the actual Kwik host (kwik.si, etc.)
+            # instead of a hardcoded kwik.cx, so it is sent on the POST target.
+            cookie_domain = (
+                host_from_url(form_action_url) or host_from_url(page_url) or "kwik.cx"
+            )
+            client.cookies.set(
+                "kwik_session", session_cookie, domain=cookie_domain, path="/"
+            )
 
         origin = self._origin_from_url(form_action_url)
         headers = self._browser_headers(
@@ -454,23 +492,25 @@ class KwikPahe:
             origin=origin or None,
             navigation=False,
         )
-        
+
         response = await client.post(
             form_action_url,
             headers=headers,
             data={"_token": token},
-            allow_redirects=False
+            allow_redirects=False,
         )
-        
+
         if response.status_code in {301, 302, 303, 307, 308}:
             location = response.headers.get("location")
             if location:
                 return self._absolute_https_url(location, base_url=form_action_url)
-        
-        raise KwikDecodeError(f"No redirect found from Kwik POST (status: {response.status_code})")
-    
+
+        raise KwikDecodeError(
+            f"No redirect found from Kwik POST (status: {response.status_code})"
+        )
+
     async def decode_kwik_page(
-        self, 
+        self,
         client: AsyncSession,
         kwik_url: str,
         retries: int = 5,
@@ -478,18 +518,18 @@ class KwikPahe:
     ) -> str:
         """
         Fetch and decode a Kwik page to extract the direct download link.
-        
+
         Args:
             client: HTTP client
             kwik_url: URL to the Kwik page (e.g., https://kwik.si/f/...)
             retries: Number of retry attempts
-            
+
         Returns:
             Direct download URL
         """
         if retries <= 0:
             raise KwikDecodeError("Exceeded retry limit for Kwik decode")
-        
+
         try:
             self._load_cookie_file(client)
             response = await self._fetch_with_retry(
@@ -498,61 +538,91 @@ class KwikPahe:
                 headers=self._browser_headers(referer=referer),
             )
             page_url = str(response.url)
-            
+
             # Clean the response text
-            clean_text = response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
-            
+            clean_text = (
+                response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+            )
+
             # Extract session cookie
             set_cookie = response.headers.get("set-cookie", "")
             session_match = re.search(r"kwik_session=([^;]*);", set_cookie)
             session_cookie = session_match.group(1) if session_match else ""
-            
+
             # Try to find the encoding parameters
             # Pattern: ("encoded_string", some_number, "alphabet_key", offset, base, another_number)
             encoded_match = re.search(
                 r'\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)',
-                clean_text
+                clean_text,
             )
-            
+
             if not encoded_match:
                 # Retry if pattern not found
                 await asyncio.sleep(1)
-                return await self.decode_kwik_page(client, kwik_url, retries - 1, referer=referer)
-            
+                return await self.decode_kwik_page(
+                    client, kwik_url, retries - 1, referer=referer
+                )
+
             encoded_string, alphabet_key, offset, base = encoded_match.groups()
             offset = int(offset)
             base = int(base)
-            
+
             # Decode the obfuscated JS
-            decoded = self.decode_obfuscated_js(encoded_string, alphabet_key, offset, base)
-            
+            decoded = self.decode_obfuscated_js(
+                encoded_string, alphabet_key, offset, base
+            )
+
             # Extract the form action URL and token
             action_match = re.search(r'action="([^"]+)"', decoded)
             token_match = re.search(r'value="([^"]+)"', decoded)
-            
+
             if not action_match or not token_match:
                 await asyncio.sleep(1)
-                return await self.decode_kwik_page(client, kwik_url, retries - 1, referer=referer)
-            
-            form_action = self._absolute_https_url(action_match.group(1), base_url=page_url)
+                return await self.decode_kwik_page(
+                    client, kwik_url, retries - 1, referer=referer
+                )
+
+            form_action = self._absolute_https_url(
+                action_match.group(1), base_url=page_url
+            )
             token = token_match.group(1)
-            
-            # Get the direct link
-            direct_link = await self.fetch_direct_link(client, form_action, token, session_cookie, page_url)
+
+            # Get the direct link. A transient "no redirect" POST failure (token
+            # timing) is retried within the existing budget, mirroring main.py.
+            # Cloudflare-challenge KwikDecodeErrors still fast-fail below.
+            try:
+                direct_link = await self.fetch_direct_link(
+                    client, form_action, token, session_cookie, page_url
+                )
+            except KwikDecodeError as exc:
+                if retries > 1 and "No redirect found" in str(exc):
+                    await asyncio.sleep(1)
+                    return await self.decode_kwik_page(
+                        client, kwik_url, retries - 1, referer=referer
+                    )
+                raise
             parsed = urlparse(direct_link)
-            if retries > 1 and parsed.netloc.startswith("kwik.") and parsed.path.startswith("/f/"):
+            if (
+                retries > 1
+                and parsed.netloc.startswith("kwik.")
+                and parsed.path.startswith("/f/")
+            ):
                 # Some responses return an intermediate kwik URL; resolve once more.
-                return await self.decode_kwik_page(client, direct_link, retries - 1, referer=page_url)
+                return await self.decode_kwik_page(
+                    client, direct_link, retries - 1, referer=page_url
+                )
             return direct_link
-            
+
         except KwikDecodeError:
             raise
         except Exception as e:
             if retries > 1:
                 await asyncio.sleep(1)
-                return await self.decode_kwik_page(client, kwik_url, retries - 1, referer=referer)
+                return await self.decode_kwik_page(
+                    client, kwik_url, retries - 1, referer=referer
+                )
             raise KwikDecodeError(f"Failed to decode Kwik page: {e}")
-    
+
     async def extract_download_link(
         self,
         client: AsyncSession,
@@ -561,21 +631,23 @@ class KwikPahe:
     ) -> str:
         async with self._resolve_semaphore:
             await self._pace_resolve()
-            return await self._extract_download_link_unpaced(client, pahe_embed_url, referer=referer)
+            return await self._extract_download_link_unpaced(
+                client, pahe_embed_url, referer=referer
+            )
 
     async def _extract_download_link_unpaced(
-        self, 
+        self,
         client: AsyncSession,
         pahe_embed_url: str,
         referer: Optional[str] = None,
     ) -> str:
         """
         Extract the direct download link from a pahe.win embed page.
-        
+
         Args:
             client: HTTP client with proper session/cookies
             pahe_embed_url: URL to the pahe.win embed page
-            
+
         Returns:
             Direct download URL to the video file
         """
@@ -589,36 +661,46 @@ class KwikPahe:
             pahe_embed_url,
             headers=self._browser_headers(referer=referer or "https://kwik.cx/"),
         )
-        
+
         if response.status_code != 200:
             raise KwikDecodeError(f"Failed to fetch embed page: {response.status_code}")
-        
-        clean_text = response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
-        
+
+        clean_text = (
+            response.text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+        )
+
         # Try to find direct Kwik link first
-        kwik_match = re.search(r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', clean_text)
-        
+        kwik_match = re.search(
+            r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', clean_text
+        )
+
         if kwik_match:
             kwik_url = kwik_match.group(1)
         else:
             # Try to decode from obfuscated content
             encoded_match = re.search(
                 r'\(\s*"([^",]*)"\s*,\s*\d+\s*,\s*"([^",]*)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+[a-zA-Z]?\s*\)',
-                clean_text
+                clean_text,
             )
-            
+
             if not encoded_match:
-                raise KwikDecodeError(f"Could not extract Kwik link from {pahe_embed_url}")
-            
+                raise KwikDecodeError(
+                    f"Could not extract Kwik link from {pahe_embed_url}"
+                )
+
             encoded_string, alphabet_key, offset, base = encoded_match.groups()
-            decoded = self.decode_obfuscated_js(encoded_string, alphabet_key, int(offset), int(base))
-            
-            kwik_match = re.search(r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', decoded)
+            decoded = self.decode_obfuscated_js(
+                encoded_string, alphabet_key, int(offset), int(base)
+            )
+
+            kwik_match = re.search(
+                r'(https?://kwik\.[^/\s"]+/[^/\s"]+/[^"\s]*)', decoded
+            )
             if not kwik_match:
                 raise KwikDecodeError("Could not find Kwik link in decoded content")
-            
+
             kwik_url = kwik_match.group(1)
-        
+
         kwik_url = self._normalize_kwik_url(kwik_url)
-        
+
         return await self.decode_kwik_page(client, kwik_url, referer=pahe_embed_url)
